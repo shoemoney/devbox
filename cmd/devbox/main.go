@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -779,7 +780,7 @@ func hookEditCmd() *cobra.Command {
 			}
 			_ = os.Chmod(path, 0o755) // ensure executable so the runner picks it up
 
-			editor := firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
+			editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
 			if editor == "" {
 				fmt.Fprintf(out, "✏️  edit it: %s (set $EDITOR to open automatically)\n", path)
 				return nil
@@ -815,7 +816,7 @@ func hookListCmd() *cobra.Command {
 			fmt.Fprintf(out, "hooks dir: %s\n", hookDir)
 			for _, e := range hooks.AllEvents() {
 				glyph := "·"
-				if isExecutable(filepath.Join(hookDir, e)) || isExecutable(filepath.Join(hookDir, e+".ps1")) {
+				if hooks.Executable(filepath.Join(hookDir, e)) || hooks.Executable(filepath.Join(hookDir, e+".ps1")) {
 					glyph = "✅"
 				}
 				fmt.Fprintf(out, "  %s %s\n", glyph, e)
@@ -823,18 +824,4 @@ func hookListCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

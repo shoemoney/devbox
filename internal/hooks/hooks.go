@@ -137,16 +137,18 @@ func (r *Runner) Run(event string, changed []string, snapshot string) error {
 // or an executable <event> (bash).
 func (r *Runner) find(event string) (script, interp string, ok bool) {
 	dir := Dir(r.Root)
-	if ps := filepath.Join(dir, event+".ps1"); executable(ps) {
+	if ps := filepath.Join(dir, event+".ps1"); Executable(ps) {
 		return ps, "pwsh", true
 	}
-	if base := filepath.Join(dir, event); executable(base) {
+	if base := filepath.Join(dir, event); Executable(base) {
 		return base, "bash", true
 	}
 	return "", "", false
 }
 
-func executable(path string) bool {
+// Executable reports whether path is a runnable hook script (a non-dir file with
+// an exec bit; on Windows the exec bit doesn't exist, so any file qualifies).
+func Executable(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return false
