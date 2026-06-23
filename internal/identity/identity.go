@@ -35,8 +35,14 @@ func Generate() (Identity, error) {
 
 // Fingerprint is a short, stable id derived from the public key.
 func (id Identity) Fingerprint() string {
-	sum := sha256.Sum256(id.Pub)
-	return hex.EncodeToString(sum[:8]) // 16 hex chars
+	return FingerprintOf(id.Pub)
+}
+
+// FingerprintOf returns the device id (16 hex chars) for a public key. The hub
+// uses this to derive the same device id the device computes for itself.
+func FingerprintOf(pub ed25519.PublicKey) string {
+	sum := sha256.Sum256(pub)
+	return hex.EncodeToString(sum[:8])
 }
 
 // Save writes the keypair under dir atomically (private key 0600, dir 0700).

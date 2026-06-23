@@ -4,12 +4,12 @@
 package manifest
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
 	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
@@ -97,13 +97,25 @@ func Build(root string, ig *ignore.Matcher, guard *secret.Guard) (Manifest, []st
 	return Manifest{Entries: entries}, blocked, nil
 }
 
-// ID is the content address of the manifest (BLAKE3 of its canonical form).
+// Marshal returns the manifest's canonical JSON bytes. Build sorts Entries, so
+// this is deterministic and serves as the content-addressed manifest blob.
+func (m Manifest) Marshal() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+// Unmarshal parses manifest bytes produced by Marshal.
+func Unmarshal(b []byte) (Manifest, error) {
+	var m Manifest
+	err := json.Unmarshal(b, &m)
+	return m, err
+}
+
+// ID is the content address of the manifest (BLAKE3 of its canonical bytes). It
+// is the blob key the manifest is stored under and the id of the snapshot it
+// represents.
 func (m Manifest) ID() string {
-	var b strings.Builder
-	for _, e := range m.Entries {
-		fmt.Fprintf(&b, "%s\x00%o\x00%d\x00%s\n", e.Path, e.Mode, e.Size, strings.Join(e.Chunks, ","))
-	}
-	return chunk.Hash([]byte(b.String()))
+	b, _ := m.Marshal() // json.Marshal of this struct cannot fail
+	return chunk.Hash(b)
 }
 
 // Changes is the difference between two manifests.

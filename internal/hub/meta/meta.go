@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS devices (
   id        TEXT PRIMARY KEY,
   name      TEXT NOT NULL,
   pubkey    BLOB NOT NULL,
+  bearer    TEXT,
   last_seen INTEGER,
   revoked   INTEGER NOT NULL DEFAULT 0
 );
@@ -98,10 +99,39 @@ func (d *DB) Revoked(id string) (bool, error) {
 	return revoked != 0, nil
 }
 
-// Revoke marks a device revoked; its access ends immediately.
+// Revoke marks a device revoked; its access (and bearer) ends immediately.
 func (d *DB) Revoke(id string) error {
 	_, err := d.sql.Exec(`UPDATE devices SET revoked=1 WHERE id=?`, id)
 	return err
+}
+
+// IssueBearer sets a device's bearer token (used to authenticate requests).
+func (d *DB) IssueBearer(deviceID, bearer string) error {
+	_, err := d.sql.Exec(`UPDATE devices SET bearer=? WHERE id=?`, bearer, deviceID)
+	return err
+}
+
+// DeviceByBearer resolves a bearer token to a non-revoked device id.
+func (d *DB) DeviceByBearer(bearer string) (id string, ok bool, err error) {
+	if bearer == "" {
+		return "", false, nil
+	}
+	err = d.sql.QueryRow(`SELECT id FROM devices WHERE bearer=? AND revoked=0`, bearer).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+// CountDevices, CountShares, CountSnapshots, CountChunks back the /metrics page.
+func (d *DB) Count(table string) (int64, error) {
+	var n int64
+	// table is a fixed internal constant, never user input.
+	err := d.sql.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n)
+	return n, err
 }
 
 // --- tokens --------------------------------------------------------------
