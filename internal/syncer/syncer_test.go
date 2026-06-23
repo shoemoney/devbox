@@ -25,11 +25,11 @@ func joinDevice(t *testing.T, db *meta.DB, baseURL, name string) *transport.Clie
 		t.Fatal(err)
 	}
 	c := transport.New(baseURL)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Join(tok, name, pub); err != nil {
+	if _, err := c.Join(tok, name, pub, priv); err != nil {
 		t.Fatalf("join %s: %v", name, err)
 	}
 	return c
@@ -75,11 +75,11 @@ func TestPushEndToEnd(t *testing.T) {
 	writeFile(t, root, "node_modules/x.js", "junk()\n") // ignored
 
 	c := transport.New(srv.URL)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Join(tok, "testdev", pub); err != nil {
+	if _, err := c.Join(tok, "testdev", pub, priv); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	if c.Bearer() == "" {

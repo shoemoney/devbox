@@ -1,6 +1,9 @@
 package transport
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,6 +25,7 @@ func writeJSON(t *testing.T, w http.ResponseWriter, code int, v any) {
 }
 
 func TestJoinSetsBearer(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != proto.PathJoin {
 			t.Fatalf("Join: got %s %s", r.Method, r.URL.Path)
@@ -33,15 +37,19 @@ func TestJoinSetsBearer(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode JoinRequest: %v", err)
 		}
-		if req.Token != "tok" || req.Name != "laptop" || string(req.Pubkey) != "PUB" {
+		if req.Token != "tok" || req.Name != "laptop" || !bytes.Equal(req.Pubkey, pub) {
 			t.Fatalf("unexpected JoinRequest: %+v", req)
+		}
+		// The client must prove possession: a valid signature over the challenge.
+		if !ed25519.Verify(pub, proto.JoinChallenge(req.Token, req.Pubkey), req.Signature) {
+			t.Fatal("Join did not send a valid proof-of-possession signature")
 		}
 		writeJSON(t, w, http.StatusOK, proto.JoinResponse{DeviceID: "dev1", Bearer: "secret"})
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	resp, err := c.Join("tok", "laptop", []byte("PUB"))
+	resp, err := c.Join("tok", "laptop", pub, priv)
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}

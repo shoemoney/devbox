@@ -104,6 +104,15 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().Unix()
+
+	// Proof of possession: the device id is derived from req.Pubkey, so require a
+	// signature proving the joiner actually holds that key. Checked BEFORE
+	// redeeming the token so a bad request can't burn a legitimate one-time token.
+	if len(req.Pubkey) != ed25519.PublicKeySize ||
+		!ed25519.Verify(ed25519.PublicKey(req.Pubkey), proto.JoinChallenge(req.Token, req.Pubkey), req.Signature) {
+		writeErr(w, http.StatusUnauthorized, "join signature invalid")
+		return
+	}
 	deviceID := identity.FingerprintOf(ed25519.PublicKey(req.Pubkey))
 
 	ok, err := s.db.RedeemToken(HashToken(req.Token), now)

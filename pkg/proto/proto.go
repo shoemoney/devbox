@@ -40,9 +40,20 @@ const AuthHeader = "Authorization"
 
 // JoinRequest enrolls a device by redeeming a one-time join token.
 type JoinRequest struct {
-	Token  string `json:"token"`
-	Name   string `json:"name"`
-	Pubkey []byte `json:"pubkey"` // ed25519 public key
+	Token     string `json:"token"`
+	Name      string `json:"name"`
+	Pubkey    []byte `json:"pubkey"`    // ed25519 public key
+	Signature []byte `json:"signature"` // ed25519 sig over JoinChallenge(token, pubkey)
+}
+
+// JoinChallenge is the message a joining device signs with its private key to
+// prove it actually holds the key behind Pubkey (the device id is derived from
+// Pubkey, so without this anyone could claim another device's identity). Binding
+// the one-time token means the signature can't be replayed for a different join.
+func JoinChallenge(token string, pubkey []byte) []byte {
+	msg := make([]byte, 0, len(token)+len(pubkey))
+	msg = append(msg, token...)
+	return append(msg, pubkey...)
 }
 
 // JoinResponse returns the device id and the bearer token for future requests.

@@ -77,14 +77,15 @@ func TestHubHappyPath(t *testing.T) {
 	if err := db.CreateToken(HashToken("jointok"), now+3600); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	status, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{
-		Token:  "jointok",
-		Name:   "laptop",
-		Pubkey: pub,
+		Token:     "jointok",
+		Name:      "laptop",
+		Pubkey:    pub,
+		Signature: ed25519.Sign(priv, proto.JoinChallenge("jointok", pub)),
 	}))
 	if status != http.StatusOK {
 		t.Fatalf("join status = %d, body = %s", status, body)
@@ -218,11 +219,11 @@ func TestHubAuthAndHashErrors(t *testing.T) {
 	if err := db.CreateToken(HashToken("tok2"), now+3600); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	status, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{Token: "tok2", Name: "n", Pubkey: pub}))
+	status, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{Token: "tok2", Name: "n", Pubkey: pub, Signature: ed25519.Sign(priv, proto.JoinChallenge("tok2", pub))}))
 	if status != http.StatusOK {
 		t.Fatalf("join status = %d, body = %s", status, body)
 	}

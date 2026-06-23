@@ -24,11 +24,11 @@ func join(t *testing.T, db *meta.DB, url, name string) string {
 		t.Fatal(err)
 	}
 	c := transport.New(url)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Join(tok, name, pub); err != nil {
+	if _, err := c.Join(tok, name, pub, priv); err != nil {
 		t.Fatalf("join %s: %v", name, err)
 	}
 	return c.Bearer()

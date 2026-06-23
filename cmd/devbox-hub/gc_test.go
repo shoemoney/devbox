@@ -49,11 +49,11 @@ func TestGCDropsOldUniqueChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := transport.New(srv.URL)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Join("tok", "dev", pub); err != nil {
+	if _, err := c.Join("tok", "dev", pub, priv); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Publish("proj"); err != nil {

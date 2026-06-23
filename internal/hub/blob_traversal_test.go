@@ -18,12 +18,13 @@ func enroll(t *testing.T, base string, db *meta.DB) string {
 	if err := db.CreateToken(HashToken("tok"), time.Now().Unix()+3600); err != nil {
 		t.Fatal(err)
 	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	status, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{
 		Token: "tok", Name: "dev", Pubkey: pub,
+		Signature: ed25519.Sign(priv, proto.JoinChallenge("tok", pub)),
 	}))
 	if status != http.StatusOK {
 		t.Fatalf("join status %d: %s", status, body)

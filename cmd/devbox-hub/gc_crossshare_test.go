@@ -37,8 +37,8 @@ func TestGCKeepsChunksSharedAcrossShares(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := transport.New(srv.URL)
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := c.Join("tok", "dev", pub); err != nil {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := c.Join("tok", "dev", pub, priv); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Publish("a"); err != nil {

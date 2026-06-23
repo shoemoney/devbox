@@ -90,7 +90,7 @@ func joinCmd() *cobra.Command {
 			name, _ := os.Hostname()
 
 			c := transport.New(hubURL)
-			resp, err := c.Join(token, name, id.Pub)
+			resp, err := c.Join(token, name, id.Pub, id.Priv)
 			if err != nil {
 				return err
 			}

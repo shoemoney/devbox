@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,10 +49,11 @@ func (c *Client) Bearer() string { return c.bearer }
 
 // Join redeems a one-time token and enrolls this device. It is unauthenticated;
 // on success it stashes the returned bearer via SetBearer.
-func (c *Client) Join(token, name string, pubkey []byte) (proto.JoinResponse, error) {
+func (c *Client) Join(token, name string, pubkey ed25519.PublicKey, priv ed25519.PrivateKey) (proto.JoinResponse, error) {
 	var resp proto.JoinResponse
+	sig := ed25519.Sign(priv, proto.JoinChallenge(token, pubkey)) // prove we hold the key
 	err := c.do(http.MethodPost, proto.PathJoin, false, proto.JoinRequest{
-		Token: token, Name: name, Pubkey: pubkey,
+		Token: token, Name: name, Pubkey: pubkey, Signature: sig,
 	}, &resp)
 	if err != nil {
 		return proto.JoinResponse{}, err
