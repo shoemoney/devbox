@@ -13,10 +13,23 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNotFound is returned by Get/Delete for a missing blob.
 var ErrNotFound = errors.New("blobstore: blob not found")
+
+// safeKey rejects keys that aren't a single, separator-free filename. The hub
+// validates hash *shape* at its HTTP boundary; this is defense in depth so a key
+// like "../../etc/passwd" (or one whose first two chars are "..", which would
+// escape via shardDir) can never leave the blob root, even if a future caller
+// forgets to validate. Stays algorithm-agnostic (no fixed length/charset).
+func safeKey(hash string) error {
+	if hash == "" || hash == "." || strings.Contains(hash, "..") || strings.ContainsAny(hash, `/\`) {
+		return fmt.Errorf("blobstore: unsafe blob key %q", hash)
+	}
+	return nil
+}
 
 // Store is a content-addressed blob store.
 type Store interface {
@@ -53,6 +66,9 @@ func (d *Disk) path(hash string) string {
 
 // Has reports whether a blob with the given hash exists.
 func (d *Disk) Has(hash string) (bool, error) {
+	if err := safeKey(hash); err != nil {
+		return false, err
+	}
 	_, err := os.Stat(d.path(hash))
 	if err == nil {
 		return true, nil
@@ -67,8 +83,8 @@ func (d *Disk) Has(hash string) (bool, error) {
 // writes atomically via a temp file + rename, so a partial write never appears
 // as a complete blob.
 func (d *Disk) Put(hash string, data []byte) error {
-	if hash == "" {
-		return fmt.Errorf("blobstore: empty hash")
+	if err := safeKey(hash); err != nil {
+		return err
 	}
 	if ok, err := d.Has(hash); err != nil || ok {
 		return err
@@ -97,6 +113,9 @@ func (d *Disk) Put(hash string, data []byte) error {
 
 // Get returns the blob bytes for hash, or ErrNotFound.
 func (d *Disk) Get(hash string) ([]byte, error) {
+	if err := safeKey(hash); err != nil {
+		return nil, err
+	}
 	b, err := os.ReadFile(d.path(hash))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ErrNotFound
@@ -106,6 +125,9 @@ func (d *Disk) Get(hash string) ([]byte, error) {
 
 // Delete removes a blob, returning ErrNotFound if it was absent.
 func (d *Disk) Delete(hash string) error {
+	if err := safeKey(hash); err != nil {
+		return err
+	}
 	err := os.Remove(d.path(hash))
 	if errors.Is(err, fs.ErrNotExist) {
 		return ErrNotFound

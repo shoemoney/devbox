@@ -149,6 +149,23 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, deviceID 
 	w.WriteHeader(http.StatusOK)
 }
 
+// validHash reports whether h is a well-formed content hash (BLAKE3-256 hex).
+// Blob keys flow into filesystem paths, so anything else (../, %2f-decoded
+// slashes, absolute paths) is rejected at the trust boundary before it can
+// escape the blob root. Legit keys are always 64 lowercase hex chars.
+func validHash(h string) bool {
+	if len(h) != 64 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleHave(w http.ResponseWriter, r *http.Request, _ string) {
 	var req proto.HaveRequest
 	if !decode(w, r, &req) {
@@ -156,6 +173,10 @@ func (s *Server) handleHave(w http.ResponseWriter, r *http.Request, _ string) {
 	}
 	var missing []string
 	for _, h := range req.Hashes {
+		if !validHash(h) {
+			writeErr(w, http.StatusBadRequest, "invalid hash")
+			return
+		}
 		has, err := s.store.Has(h)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -170,7 +191,15 @@ func (s *Server) handleHave(w http.ResponseWriter, r *http.Request, _ string) {
 
 // handleGetBlob serves a blob's bytes for download (pull fetches manifests + chunks).
 func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string) {
-	b, err := s.store.Get(r.PathValue("hash"))
+	hash := r.PathValue("hash")
+	if !validHash(hash) {
+		// ServeMux URL-decodes %2f/%2e in the {hash} wildcard, so an unvalidated
+		// key like "..%2f..%2fetc%2fpasswd" would escape the blob root. Reject as
+		// "not found" — an invalid hash is, by definition, not a stored blob.
+		writeErr(w, http.StatusNotFound, "no such blob")
+		return
+	}
+	b, err := s.store.Get(hash)
 	if errors.Is(err, blobstore.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "no such blob")
 		return
