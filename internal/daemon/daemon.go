@@ -6,7 +6,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -46,7 +45,6 @@ type Daemon struct {
 	state  map[string]string       // mountKey -> last-applied snapshot
 	nudges map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
 	mounts map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
-	ctrl   *control.Server         // nil until Run starts it (and on Windows)
 }
 
 // New builds a daemon from a loaded config. logf may be nil (defaults to log.Printf).
@@ -80,10 +78,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Start the control plane before mounts so `devbox status`/`pause` can reach
 	// the daemon immediately. A bind failure is non-fatal: sync must not depend on
 	// the control socket. Serve stops itself on ctx cancel.
-	if srv, err := control.Serve(ctx, d.dir, d, d.logf); err != nil {
+	if _, err := control.Serve(ctx, d.dir, d, d.logf); err != nil {
 		d.logf("control socket unavailable (introspection/pause disabled): %v", err)
-	} else {
-		d.ctrl = srv
 	}
 
 	var wg sync.WaitGroup
@@ -303,7 +299,6 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		}
 		d.setBase(m, pr.Base)
 		d.report(m, pr)
-		d.publishActivity(m, pr)
 		return
 	}
 
@@ -314,14 +309,6 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	}
 	d.setBase(m, newBase)
 	d.report(m, pr)
-	d.publishActivity(m, pr)
-}
-
-// publishActivity feeds a one-line sync summary to the control plane's
-// GET /events stream (no-op when the control server didn't start).
-func (d *Daemon) publishActivity(m config.Mount, pr syncer.PullResult) {
-	d.ctrl.Publish(m.Share, fmt.Sprintf("synced: %d written, %d deleted, %d conflicts, %d skipped",
-		len(pr.Written), len(pr.Deleted), len(pr.Conflicts), len(pr.Skipped)))
 }
 
 func (d *Daemon) report(m config.Mount, pr syncer.PullResult) {
