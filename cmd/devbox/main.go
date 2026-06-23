@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -44,9 +45,12 @@ func main() {
 		publishCmd(),
 		mountCmd(),
 		logCmd(),
+		unmountCmd(),
 		restoreCmd(),
 		deployCmd(),
 		hookCmd(),
+		ignoreCmd(),
+		conflictsCmd(),
 		startCmd(),
 		stopCmd(),
 		statusCmd(),
@@ -356,6 +360,110 @@ func restoreCmd() *cobra.Command {
 				what = share + "/" + onlyPath
 			}
 			fmt.Fprintf(out, "↩️  restored %s -> snapshot %s\n", what, short(res.Snapshot))
+			return nil
+		},
+	}
+}
+
+func unmountCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unmount <share>",
+		Short: "⏏️  stop syncing a share's mount(s) — files stay on disk",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share := args[0]
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			var kept, removed []config.Mount
+			for _, m := range d.Mounts {
+				if m.Share == share {
+					removed = append(removed, m)
+				} else {
+					kept = append(kept, m)
+				}
+			}
+			if len(removed) == 0 {
+				return fmt.Errorf("no mount for share %q", share)
+			}
+			d.Mounts = kept
+			if err := config.SaveDaemon(dir, d); err != nil {
+				return err
+			}
+			st, err := config.LoadState(dir)
+			if err != nil {
+				return err
+			}
+			for _, m := range removed {
+				delete(st, share+"\x00"+m.Subpath+"\x00"+m.Local)
+			}
+			if err := config.SaveState(dir, st); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "⏏️  unmounted %q (%d mount(s)); files left on disk\n", share, len(removed))
+			return nil
+		},
+	}
+}
+
+func ignoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ignore <pattern>",
+		Short: "🙈 append a pattern to ./.devignore (run from inside a mount)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := os.OpenFile(".devignore", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			if _, err := fmt.Fprintln(f, args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "🙈 added %q to ./.devignore (applies on next sync)\n", args[0])
+			return nil
+		},
+	}
+}
+
+func conflictsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "conflicts",
+		Short: "💥 list conflict copies across all mounts",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			n := 0
+			for _, m := range d.Mounts {
+				_ = filepath.WalkDir(m.Local, func(p string, e fs.DirEntry, err error) error {
+					if err != nil || e.IsDir() {
+						return nil
+					}
+					if strings.Contains(e.Name(), ".conflict-") {
+						rel, _ := filepath.Rel(m.Local, p)
+						fmt.Fprintf(out, "  💥 %s/%s\n", m.Share, filepath.ToSlash(rel))
+						n++
+					}
+					return nil
+				})
+			}
+			if n == 0 {
+				fmt.Fprintln(out, "✅ no conflict copies")
+			} else {
+				fmt.Fprintf(out, "%d conflict copy(ies) — review, then delete the loser(s)\n", n)
+			}
 			return nil
 		},
 	}

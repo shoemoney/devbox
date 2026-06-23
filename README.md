@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M7-yellow?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%8E%89%20v1%20complete%20%C2%B7%20M0%E2%80%93M7%20%E2%9C%85-brightgreen?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -30,10 +30,10 @@
 ```
 
 > [!NOTE]
-> 🔨 **devbox is under active construction.** The [spec](docs/superpowers/specs/2026-06-22-devbox-design.md)
-> is complete and the foundation is being built milestone by milestone. **Some commands below
-> describe the v1 design and aren't wired up yet** — see the honest build status. Star/watch and
-> follow along. ⭐
+> 🎉 **devbox v1 is feature-complete.** All milestones M0–M7 are built and
+> **fleet-verified on real hardware** (two Macs live-syncing through a hub on a NAS).
+> The [spec](docs/superpowers/specs/2026-06-22-devbox-design.md) is fully implemented;
+> every command below is wired up and tested. Star/watch and follow along. ⭐
 >
 > | Milestone | Status |
 > |---|---|
@@ -45,7 +45,7 @@
 > | M5 — Lifecycle hooks (pre/post push/pull, on-conflict) | ✅ done — **`post-pull` ran on a real fleet node** 🪝 |
 > | M6 — Versioning: `log` / `restore` + hub GC | ✅ done — restore reverted a file on the fleet 🕰️ |
 > | M6.5 — `devbox deploy` (pin a mount to a snapshot, no push) | ✅ done — **blue/green-deployed v1 on a real box while head stayed v2** 🚀 |
-> | M7 — Hardening: `devbox doctor`, reconnect/backoff, name-clash, release builds | 🔨 next |
+> | M7 — Hardening: `devbox doctor`, reconnect/backoff, name-clash, release builds | ✅ done — **doctor/stop/hooks + share-name guard fleet-verified** 🛡️ |
 
 ---
 
@@ -275,7 +275,7 @@ The offline edit is **never lost** — it just lands as a clearly-named sibling.
 
 ## 🚀 Quick Start
 
-> 🚧 *Design preview — these commands describe v1, not a shipping binary yet.*
+> ✅ *Every command below is implemented and fleet-tested. Build with `scripts/build-release.sh`.*
 
 ```bash
 # 🛰️  On your hub (Pi / TrueNAS / NAS)
@@ -316,16 +316,15 @@ container automatically. 🪄
 | `devbox publish <dir> <name>` | 📂 Create a share from a local folder + push it |
 | `devbox unmount <share>` | ⏏️ Stop syncing a mount (files stay on disk) |
 | `devbox start` / `stop` | ▶️⏹️ Run / stop the daemon |
-| `devbox status` | 📊 Shares, mounts, peers, conflicts, blocked secrets |
-| `devbox pause` / `resume` | ⏸️▶️ Halt sync without unmounting |
-| `devbox log` | 🕰️ Snapshot history |
-| `devbox restore <snap> [path]` | ↩️ Roll back a file or a whole share |
+| `devbox status` | 📊 Device, hub, mounts (with `ro`/`pinned`) |
+| `devbox log <share>` | 🕰️ Snapshot history (full ids) |
+| `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
-| `devbox conflicts` | 💥 List conflict copies |
-| `devbox ignore <pattern>` | 🙈 Append to `.devignore` + rescan |
-| `devbox hook edit <event>` | 🪝 Open a hook in `$EDITOR` |
-| `devbox peers` | 🌐 Linked machines, online/offline, last seen |
-| `devbox doctor` | 🩺 Diagnose watcher limits, perms, hook interpreter, connectivity |
+| `devbox conflicts` | 💥 List conflict copies across all mounts |
+| `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
+| `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
+| `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer |
+| `devbox pause` / `resume` / `peers` | ⏸️🌐 *Planned — need daemon IPC / a hub peers endpoint* |
 
 </details>
 
@@ -473,7 +472,8 @@ flowchart LR
     style M4 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M5 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M6 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M65 fill:#4F9CF9,color:#fff
+    style M65 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M7 fill:#1e5a2e,stroke:#51cf66,color:#fff
 ```
 
 | | Milestone | Deliverable |
@@ -485,12 +485,8 @@ flowchart LR
 | ✅ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, **sub-path mounts** (`mount proj/app /dir`), bandwidth cap — fleet-verified |
 | ✅ | **M5 — Hooks** 🪝 | bash (+`.ps1`) lifecycle runner, env injection, 60s timeout, `pre-*` veto — `post-pull` fired on a fleet node |
 | ✅ | **M6 — Versioning** 🕰️ | `devbox log` (full snapshot ids) / `restore` (revert any file) / hub `gc` — fleet-verified |
-| 🔨 | **M6.5 — Deploy** 🚢 | `devbox deploy <share> <snapshot>` |
-| ⬜ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
-| ⬜ | **M5 — Hooks** 🪝 | bash/`.ps1` runner, templates, env, timeout |
-| ⬜ | **M6 — Versioning** 🕰️ | `log` / `restore`, hub GC |
-| ⬜ | **M6.5 — Deploy** 🚢 | `devbox deploy <share> <snapshot>` |
-| ⬜ | **M7 — Hardening** 🛡️ | `doctor`, reconnect/backoff, name-clash, arm64/mac/win releases |
+| ✅ | **M6.5 — Deploy** 🚀 | `devbox deploy <share> <snapshot>` — apply a snapshot without pushing, `[pinned]` mount; fleet-verified blue/green |
+| ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, share-name guard, release builds — fleet-verified |
 
 <details>
 <summary>🔮 <b>v2 backlog</b></summary>
@@ -528,8 +524,8 @@ interface, config-driven limits, `/metrics`) but **not part of this OSS repo**.
 
 ## 🙌 Contributing
 
-> 🚧 We're in design phase — the spec is the best place to start:
-> [`docs/superpowers/specs/2026-06-22-devbox-design.md`](docs/superpowers/specs/2026-06-22-devbox-design.md)
+> ✅ v1 is feature-complete — the [spec](docs/superpowers/specs/2026-06-22-devbox-design.md)
+> documents the full design, and `scripts/build-release.sh` cross-compiles every platform.
 
 1. 🍴 Fork & branch
 2. 🧪 Keep it lazy-correct (smallest diff that works, tests for non-trivial logic)
