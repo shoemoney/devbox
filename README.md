@@ -496,6 +496,10 @@ flowchart LR
 
 ## 🗺️ Roadmap
 
+> 🔮 **Looking ahead:** the full **[v2 design spec](docs/V2-SPEC.md)** — multi-owner teams + ACLs,
+> client-side E2E encryption (convergent, keeps dedup), LAN peer chunk-exchange + hub HA, 3-way merge,
+> and a TUI — sequenced M8→M11 by dependency. (Captured, not committed: only M8 foundations is justified today.)
+
 ```mermaid
 flowchart LR
     M0["M0 🦴\nSkeleton"] --> M1["M1 👀\nWatch + ignore\n+ secrets"]
