@@ -127,18 +127,27 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 		}()
 	}
 
-	// Hub change events -> sync (reconnect with backoff).
+	// Hub change events -> sync (reconnect with exponential backoff + jitter).
 	go func() {
+		backoff := time.Duration(0)
 		for ctx.Err() == nil {
+			start := time.Now()
 			err := c.Events(ctx, m.Share, func(proto.Event) { nudge() })
 			if ctx.Err() != nil {
 				return
 			}
-			d.logf("events %s reconnecting: %v", m.Share, err)
+			// A stream that lived a while is a transient drop, not a hard failure:
+			// reset so the retry is prompt instead of inheriting a grown delay.
+			if time.Since(start) > backoffMax {
+				backoff = 0
+			}
+			backoff = nextBackoff(backoff)
+			wait := jittered(backoff)
+			d.logf("events %s reconnecting in ~%s: %v", m.Share, wait.Round(time.Millisecond), err)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second):
+			case <-time.After(wait):
 			}
 		}
 	}()

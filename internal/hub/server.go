@@ -127,6 +127,15 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, deviceID 
 	if !decode(w, r, &req) {
 		return
 	}
+	existing, err := s.db.ShareNames()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := ValidateShareName(req.Share, existing); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.db.CreateShare(req.Share, deviceID, time.Now().Unix()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
