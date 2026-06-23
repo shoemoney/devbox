@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%9A%A7%20design%20phase-orange?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M2-yellow?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -29,11 +29,18 @@
         ╚═══════════════════════════════════════════════════════════╝
 ```
 
-> [!WARNING]
-> 🚧 **devbox is in the design phase.** The spec is complete
-> ([`docs/superpowers/specs`](docs/superpowers/specs/2026-06-22-devbox-design.md)) and
-> implementation is just beginning. **Everything below describes the v1 design — it is not yet
-> shippable.** Star/watch and follow along. ⭐
+> [!NOTE]
+> 🔨 **devbox is under active construction.** The [spec](docs/superpowers/specs/2026-06-22-devbox-design.md)
+> is complete and the foundation is being built milestone by milestone. **Some commands below
+> describe the v1 design and aren't wired up yet** — see the honest build status. Star/watch and
+> follow along. ⭐
+>
+> | Milestone | Status |
+> |---|---|
+> | M0 — Skeleton (CLI, identity, config) | ✅ done |
+> | M1 — Watch · `.devignore` · secret-guard · chunking · manifest | ✅ done |
+> | M2 — Hub + push | 🔨 building |
+> | M3+ | ⬜ design complete, not started |
 
 ---
 
@@ -449,14 +456,16 @@ flowchart LR
     M5 --> M6["M6 🕰️\nVersioning"]
     M6 --> M65["M6.5 🚢\nDeploy"]
     M65 --> M7["M7 🛡️\nHardening"]
-    style M0 fill:#4F9CF9,color:#fff
+    style M0 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M1 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M2 fill:#4F9CF9,color:#fff
 ```
 
 | | Milestone | Deliverable |
 |:---:|---|---|
-| ⬜ | **M0 — Skeleton** 🦴 | cobra CLI, `devbox join`, keypair, machine config |
-| ⬜ | **M1 — Watch + secrets** 👀 | fsnotify, `.devignore`, secret-guard, content-addressed manifests |
-| ⬜ | **M2 — Hub + push** 🛰️ | shares, token, CAS, `publish`, HTTP upload, snapshots, `/metrics` |
+| ✅ | **M0 — Skeleton** 🦴 | cobra CLI, `devbox join`, keypair, machine config |
+| ✅ | **M1 — Watch + secrets** 👀 | fsnotify, `.devignore`, secret-guard, FastCDC+BLAKE3 chunking, content-addressed manifests |
+| 🔨 | **M2 — Hub + push** 🛰️ | shares, token, CAS, `publish`, HTTP upload, snapshots, `/metrics` |
 | ⬜ | **M3 — Two-way sync** 🔄 | WS events + HTTP blobs, mount/pull, atomic apply, conflict copies |
 | ⬜ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
 | ⬜ | **M5 — Hooks** 🪝 | bash/`.ps1` runner, templates, env, timeout |
