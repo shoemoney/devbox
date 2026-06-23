@@ -2,12 +2,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"git.shoemoney.ai/shoemoney/devbox/internal/daemon"
 	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
 	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
@@ -27,10 +33,11 @@ func main() {
 	root.AddCommand(
 		joinCmd(),
 		publishCmd(),
+		mountCmd(),
+		startCmd(),
 		statusCmd(),
 		versionCmd(),
-		stub("start", "▶️  run the sync daemon", "M3"),
-		stub("stop", "⏹️  stop the sync daemon", "M3"),
+		stub("stop", "⏹️  stop the sync daemon", "M7"),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -141,6 +148,127 @@ func publishCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "📸 snapshot %s\n", short(res.Snapshot))
 			return nil
+		},
+	}
+}
+
+func mountCmd() *cobra.Command {
+	var ro bool
+	cmd := &cobra.Command{
+		Use:   "mount <share> <localdir>",
+		Short: "🔗 mount a hub share into a local directory (clone + sync)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share := args[0]
+			local, err := filepath.Abs(args[1])
+			if err != nil {
+				return err
+			}
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			if err := os.MkdirAll(local, 0o755); err != nil {
+				return err
+			}
+			d.Mounts = upsertMount(d.Mounts, config.Mount{Share: share, Local: local, Hub: d.Hub, ReadOnly: ro})
+			if err := config.SaveDaemon(dir, d); err != nil {
+				return err
+			}
+
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			ig, err := syncer.LoadIgnore(local)
+			if err != nil {
+				return err
+			}
+			guard, err := secret.New(nil)
+			if err != nil {
+				return err
+			}
+			host, _ := os.Hostname()
+			st, err := config.LoadState(dir)
+			if err != nil {
+				return err
+			}
+			key := share + "\x00" + local
+
+			var pr syncer.PullResult
+			var newBase string
+			if ro {
+				pr, err = syncer.Pull(c, local, share, st[key], host, time.Now().Unix(), ig, guard)
+				newBase = pr.Base
+			} else {
+				newBase, pr, err = syncer.Sync(c, local, share, st[key], host, time.Now().Unix(), ig, guard)
+			}
+			if err != nil {
+				return err
+			}
+			st[key] = newBase
+			if err := config.SaveState(dir, st); err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			mode := "rw"
+			if ro {
+				mode = "ro"
+			}
+			fmt.Fprintf(out, "🔗 mounted %q -> %s [%s]\n", share, local, mode)
+			fmt.Fprintf(out, "📥 %d files, %d conflicts\n", len(pr.Written), len(pr.Conflicts))
+			fmt.Fprintln(out, "▶️  run 'devbox start' to keep it live-synced")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&ro, "ro", false, "mount read-only (pull only, never push)")
+	return cmd
+}
+
+func upsertMount(mounts []config.Mount, m config.Mount) []config.Mount {
+	for i, x := range mounts {
+		if x.Share == m.Share && x.Local == m.Local {
+			mounts[i] = m
+			return mounts
+		}
+	}
+	return append(mounts, m)
+}
+
+func startCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "▶️  run the sync daemon (foreground)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			cfg, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if cfg.Hub == "" || cfg.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			if len(cfg.Mounts) == 0 {
+				return fmt.Errorf("no mounts — run: devbox mount <share> <dir>")
+			}
+			host, _ := os.Hostname()
+			dmn, err := daemon.New(dir, cfg, host, nil)
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			fmt.Fprintf(cmd.OutOrStdout(), "▶️  devboxd watching %d mount(s); Ctrl-C to stop\n", len(cfg.Mounts))
+			return dmn.Run(ctx)
 		},
 	}
 }

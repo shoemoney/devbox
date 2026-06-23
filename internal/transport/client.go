@@ -7,7 +7,9 @@
 package transport
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,6 +73,43 @@ func (c *Client) Have(hashes []string) ([]string, error) {
 // PutBlob uploads one blob's raw bytes under its content hash.
 func (c *Client) PutBlob(hash string, data []byte) error {
 	return c.raw(http.MethodPut, proto.PathBlob+hash, data)
+}
+
+// Events opens an SSE stream of hub change events (optionally filtered to one
+// share) and calls onEvent for each, until ctx is cancelled or the stream ends.
+// Uses a dedicated timeout-less client since the stream is long-lived.
+func (c *Client) Events(ctx context.Context, share string, onEvent func(proto.Event)) error {
+	u := c.base + proto.PathEvents
+	if share != "" {
+		u += "?share=" + url.QueryEscape(share)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return apiError(resp.StatusCode, b)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var ev proto.Event
+		if json.Unmarshal([]byte(data), &ev) == nil {
+			onEvent(ev)
+		}
+	}
+	return sc.Err()
 }
 
 // GetBlob downloads one blob's raw bytes by content hash (used by pull).

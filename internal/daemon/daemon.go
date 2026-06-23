@@ -1,0 +1,175 @@
+// Package daemon runs the live sync loop: for each mount it watches the local
+// tree (push on change) and subscribes to hub change events (pull on event),
+// funnelling both triggers into a serialized Sync that keeps the mount in
+// agreement with the hub.
+package daemon
+
+import (
+	"context"
+	"log"
+	"sync"
+	"time"
+
+	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
+	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
+	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"git.shoemoney.ai/shoemoney/devbox/internal/watch"
+	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+)
+
+// Daemon syncs a device's mounts against their hub.
+type Daemon struct {
+	dir   string
+	cfg   config.Daemon
+	host  string
+	guard *secret.Guard
+	logf  func(string, ...any)
+
+	mu    sync.Mutex
+	state map[string]string // mountKey -> last-applied snapshot
+}
+
+// New builds a daemon from a loaded config. logf may be nil (defaults to log.Printf).
+func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) (*Daemon, error) {
+	guard, err := secret.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	state, err := config.LoadState(dir)
+	if err != nil {
+		return nil, err
+	}
+	if logf == nil {
+		logf = log.Printf
+	}
+	return &Daemon{dir: dir, cfg: cfg, host: host, guard: guard, logf: logf, state: state}, nil
+}
+
+// Run syncs every mount until ctx is cancelled.
+func (d *Daemon) Run(ctx context.Context) error {
+	var wg sync.WaitGroup
+	for _, m := range d.cfg.Mounts {
+		wg.Add(1)
+		go func(m config.Mount) {
+			defer wg.Done()
+			d.runMount(ctx, m)
+		}(m)
+	}
+	wg.Wait()
+	return nil
+}
+
+func mountKey(m config.Mount) string { return m.Share + "\x00" + m.Local }
+
+func (d *Daemon) getBase(m config.Mount) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.state[mountKey(m)]
+}
+
+func (d *Daemon) setBase(m config.Mount, base string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.state[mountKey(m)] != base {
+		d.state[mountKey(m)] = base
+		if err := config.SaveState(d.dir, d.state); err != nil {
+			d.logf("save state: %v", err)
+		}
+	}
+}
+
+func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
+	c := transport.New(m.Hub)
+	c.SetBearer(d.cfg.Bearer)
+
+	trigger := make(chan struct{}, 1)
+	nudge := func() {
+		select {
+		case trigger <- struct{}{}:
+		default: // a sync is already queued; coalesce
+		}
+	}
+
+	// Local filesystem changes -> sync.
+	if w, err := watch.New(m.Local, 300*time.Millisecond); err != nil {
+		d.logf("watch %s: %v", m.Local, err)
+	} else {
+		defer w.Close()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-w.Events():
+					nudge()
+				}
+			}
+		}()
+	}
+
+	// Hub change events -> sync (reconnect with backoff).
+	go func() {
+		for ctx.Err() == nil {
+			err := c.Events(ctx, m.Share, func(proto.Event) { nudge() })
+			if ctx.Err() != nil {
+				return
+			}
+			d.logf("events %s reconnecting: %v", m.Share, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}()
+
+	nudge() // initial sync
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-trigger:
+			d.syncMount(c, m)
+		}
+	}
+}
+
+func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
+	ig, err := syncer.LoadIgnore(m.Local)
+	if err != nil {
+		d.logf("ignore %s: %v", m.Local, err)
+		return
+	}
+	base := d.getBase(m)
+	now := time.Now().Unix()
+
+	if m.ReadOnly {
+		pr, err := syncer.Pull(c, m.Local, m.Share, base, d.host, now, ig, d.guard)
+		if err != nil {
+			d.logf("pull %s: %v", m.Share, err)
+			return
+		}
+		d.setBase(m, pr.Base)
+		d.report(m, pr)
+		return
+	}
+
+	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, base, d.host, now, ig, d.guard)
+	if err != nil {
+		d.logf("sync %s: %v", m.Share, err)
+		return
+	}
+	d.setBase(m, newBase)
+	d.report(m, pr)
+}
+
+func (d *Daemon) report(m config.Mount, pr syncer.PullResult) {
+	if len(pr.Written)+len(pr.Deleted)+len(pr.Conflicts) == 0 {
+		return
+	}
+	d.logf("📥 %s: %d written, %d deleted, %d conflicts", m.Share, len(pr.Written), len(pr.Deleted), len(pr.Conflicts))
+	for _, cf := range pr.Conflicts {
+		d.logf("   💥 conflict copy: %s", cf)
+	}
+}

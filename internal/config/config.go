@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,4 +86,35 @@ func SaveDaemon(dir string, d Daemon) error {
 		return err
 	}
 	return os.Rename(tmp, daemonPath(dir))
+}
+
+func statePath(dir string) string { return filepath.Join(dir, "state.json") }
+
+// LoadState reads the per-mount last-applied snapshot map (mountKey -> snapshot).
+func LoadState(dir string) (map[string]string, error) {
+	b, err := os.ReadFile(statePath(dir))
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	return m, json.Unmarshal(b, &m)
+}
+
+// SaveState writes the per-mount snapshot map atomically.
+func SaveState(dir string, m map[string]string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	tmp := statePath(dir) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, statePath(dir))
 }

@@ -9,10 +9,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"sync"
 
 	fastcdc "github.com/jotfs/fastcdc-go"
 	"github.com/zeebo/blake3"
 )
+
+// ponytail: jotfs/fastcdc-go mutates a package-global table inside NewChunker
+// (table[i] ^= Seed) on every call, so concurrent Split races even with Seed 0.
+// Serialize chunking per process. Upgrade path: vendor a FastCDC with a
+// per-chunker table if chunking throughput ever bottlenecks a single daemon.
+var splitMu sync.Mutex
 
 // Chunk size targets. FastCDC keeps chunk lengths within [min, max] and aims
 // for the average via content-defined boundaries.
@@ -46,6 +53,8 @@ func Split(data []byte) ([]Chunk, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
+	splitMu.Lock()
+	defer splitMu.Unlock()
 
 	chunker, err := fastcdc.NewChunker(bytes.NewReader(data), fastcdc.Options{
 		MinSize:     MinSize,

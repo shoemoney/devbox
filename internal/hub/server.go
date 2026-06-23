@@ -22,15 +22,17 @@ import (
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
-// Server is the devbox hub: metadata in db, blob bytes in store.
+// Server is the devbox hub: metadata in db, blob bytes in store, change events
+// fanned out via broker.
 type Server struct {
-	db    *meta.DB
-	store blobstore.Store
+	db     *meta.DB
+	store  blobstore.Store
+	broker *broker
 }
 
 // NewServer builds a hub server over the given metadata store and blob store.
 func NewServer(db *meta.DB, store blobstore.Store) *Server {
-	return &Server{db: db, store: store}
+	return &Server{db: db, store: store, broker: newBroker()}
 }
 
 // HashToken returns hex(sha256(token)); the token-mint CLI reuses it so the hub
@@ -57,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathBlob+"{hash}", s.auth(s.handleGetBlob))
 	mux.HandleFunc("POST "+proto.PathPush, s.auth(s.handlePush))
 	mux.HandleFunc("GET "+proto.PathHead, s.auth(s.handleHead))
+	mux.HandleFunc("GET "+proto.PathEvents, s.auth(s.handleEvents))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
 	return mux
 }
@@ -243,6 +246,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 	if err := s.db.AddSnapshot(snap, chunks); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Only announce a genuine head advance. An idempotent re-push (manifest ==
+	// current head) must NOT broadcast, or daemons would storm: pull -> re-push
+	// the same state -> broadcast -> pull -> ... forever.
+	if req.ManifestHash != head {
+		s.broker.publish(proto.Event{Share: req.Share, Snapshot: snapshotID})
 	}
 	writeJSON(w, http.StatusOK, proto.PushResponse{Snapshot: snapshotID, Head: snapshotID, Conflict: false})
 }

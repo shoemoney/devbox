@@ -11,8 +11,15 @@ const (
 	PathBlob    = "/v1/blob/"   // PUT /v1/blob/{hash}, auth: upload one blob's bytes
 	PathPush    = "/v1/push"    // POST, auth: commit a snapshot
 	PathHead    = "/v1/head"    // GET ?share=, auth: current head snapshot id
+	PathEvents  = "/v1/events"  // GET ?share=, auth: SSE stream of change events
 	PathMetrics = "/metrics"    // GET, no auth: Prometheus text exposition
 )
+
+// Event is a hub change notification, delivered as one SSE "data:" line (JSON).
+type Event struct {
+	Share    string `json:"share"`
+	Snapshot string `json:"snapshot"`
+}
 
 // AuthHeader carries the device bearer token: "Authorization: Bearer <token>".
 const AuthHeader = "Authorization"
