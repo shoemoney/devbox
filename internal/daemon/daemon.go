@@ -6,12 +6,15 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"git.shoemoney.ai/shoemoney/devbox/internal/control"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
 	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
@@ -37,8 +40,13 @@ type Daemon struct {
 	maxBytesPerSec int
 	logf           func(string, ...any)
 
-	mu    sync.Mutex
-	state map[string]string // mountKey -> last-applied snapshot
+	paused atomic.Bool // set via control /pause; gates the sync loop
+
+	mu     sync.Mutex
+	state  map[string]string       // mountKey -> last-applied snapshot
+	nudges map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
+	mounts map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
+	ctrl   *control.Server         // nil until Run starts it (and on Windows)
 }
 
 // New builds a daemon from a loaded config. logf may be nil (defaults to log.Printf).
@@ -62,11 +70,22 @@ func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) 
 		dir: dir, cfg: cfg, host: host, guard: guard,
 		maxBytesPerSec: settings.Transfer.MaxKbps * 1024,
 		logf:           logf, state: state,
+		nudges: map[string]func(){},
+		mounts: map[string]config.Mount{},
 	}, nil
 }
 
 // Run syncs every mount until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Start the control plane before mounts so `devbox status`/`pause` can reach
+	// the daemon immediately. A bind failure is non-fatal: sync must not depend on
+	// the control socket. Serve stops itself on ctx cancel.
+	if srv, err := control.Serve(ctx, d.dir, d, d.logf); err != nil {
+		d.logf("control socket unavailable (introspection/pause disabled): %v", err)
+	} else {
+		d.ctrl = srv
+	}
+
 	var wg sync.WaitGroup
 	for _, m := range d.cfg.Mounts {
 		wg.Add(1)
@@ -118,6 +137,10 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 		default: // a sync is already queued; coalesce
 		}
 	}
+	// Register this mount so the control plane can read its live state and so
+	// Resume can kick it into a catch-up sync. Unregister on exit.
+	d.register(m, nudge)
+	defer d.unregister(m)
 
 	// Local filesystem changes -> sync. If the watcher can't start (e.g. inotify
 	// limit), we don't bail: the periodic rescan below keeps the mount syncing.
@@ -184,15 +207,82 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 		}
 	}()
 
-	nudge() // initial sync
+	if !d.paused.Load() {
+		nudge() // initial sync (skipped while paused)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-trigger:
+			// While paused we drain the trigger but don't sync; Resume re-nudges
+			// every mount so nothing buffered while paused is lost.
+			if d.paused.Load() {
+				continue
+			}
 			d.syncMount(c, m)
 		}
 	}
+}
+
+// register records a mount's nudge and config so Resume can catch it up and the
+// control plane can report its live state.
+func (d *Daemon) register(m config.Mount, nudge func()) {
+	k := mountKey(m)
+	d.mu.Lock()
+	d.nudges[k] = nudge
+	d.mounts[k] = m
+	d.mu.Unlock()
+}
+
+func (d *Daemon) unregister(m config.Mount) {
+	k := mountKey(m)
+	d.mu.Lock()
+	delete(d.nudges, k)
+	delete(d.mounts, k)
+	d.mu.Unlock()
+}
+
+// Pause stops syncing until Resume. In-flight syncs finish; queued/new triggers
+// are drained without effect while paused.
+func (d *Daemon) Pause() {
+	d.paused.Store(true)
+	d.logf("⏸️  paused — syncing suspended (devbox resume to continue)")
+}
+
+// Resume clears the pause and nudges every registered mount into an immediate
+// catch-up sync, so edits made while paused converge right away.
+func (d *Daemon) Resume() {
+	d.paused.Store(false)
+	d.mu.Lock()
+	nudges := make([]func(), 0, len(d.nudges))
+	for _, n := range d.nudges {
+		nudges = append(nudges, n)
+	}
+	d.mu.Unlock()
+	for _, n := range nudges {
+		n()
+	}
+	d.logf("▶️  resumed — catching up %d mount(s)", len(nudges))
+}
+
+// StateSnapshot returns the running daemon's live per-mount + paused view for
+// the control plane's GET /state.
+func (d *Daemon) StateSnapshot() control.State {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	st := control.State{Paused: d.paused.Load()}
+	for k, m := range d.mounts {
+		st.Mounts = append(st.Mounts, control.MountState{
+			Share:        m.Share,
+			Subpath:      m.Subpath,
+			Local:        m.Local,
+			ReadOnly:     m.ReadOnly,
+			Pinned:       m.Pinned,
+			BaseSnapshot: d.state[k],
+		})
+	}
+	return st
 }
 
 func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
@@ -213,6 +303,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		}
 		d.setBase(m, pr.Base)
 		d.report(m, pr)
+		d.publishActivity(m, pr)
 		return
 	}
 
@@ -223,6 +314,14 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	}
 	d.setBase(m, newBase)
 	d.report(m, pr)
+	d.publishActivity(m, pr)
+}
+
+// publishActivity feeds a one-line sync summary to the control plane's
+// GET /events stream (no-op when the control server didn't start).
+func (d *Daemon) publishActivity(m config.Mount, pr syncer.PullResult) {
+	d.ctrl.Publish(m.Share, fmt.Sprintf("synced: %d written, %d deleted, %d conflicts, %d skipped",
+		len(pr.Written), len(pr.Deleted), len(pr.Conflicts), len(pr.Skipped)))
 }
 
 func (d *Daemon) report(m config.Mount, pr syncer.PullResult) {
