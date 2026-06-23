@@ -156,6 +156,16 @@ func (c *Client) Head(share string) (string, error) {
 	return resp.Head, nil
 }
 
+// Log returns a share's snapshot history, newest first.
+func (c *Client) Log(share string) ([]proto.SnapshotInfo, error) {
+	var resp proto.LogResponse
+	path := proto.PathLog + "?" + url.Values{"share": {share}}.Encode()
+	if err := c.do(http.MethodGet, path, true, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Snapshots, nil
+}
+
 // do sends a JSON request (nil body for GET) and decodes a JSON response into
 // out (nil out discards the body). It sets the bearer header when auth is true.
 func (c *Client) do(method, path string, auth bool, body, out any) error {

@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathBlob+"{hash}", s.auth(s.handleGetBlob))
 	mux.HandleFunc("POST "+proto.PathPush, s.auth(s.handlePush))
 	mux.HandleFunc("GET "+proto.PathHead, s.auth(s.handleHead))
+	mux.HandleFunc("GET "+proto.PathLog, s.auth(s.handleLog))
 	mux.HandleFunc("GET "+proto.PathEvents, s.auth(s.handleEvents))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
 	return mux
@@ -269,6 +270,19 @@ func (s *Server) handleHead(w http.ResponseWriter, r *http.Request, _ string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, proto.HeadResponse{Head: head})
+}
+
+func (s *Server) handleLog(w http.ResponseWriter, r *http.Request, _ string) {
+	snaps, err := s.db.SnapshotLog(r.URL.Query().Get("share"), 100)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]proto.SnapshotInfo, len(snaps))
+	for i, s := range snaps {
+		out[i] = proto.SnapshotInfo{ID: s.ID, Parent: s.Parent, Device: s.Device, CreatedAt: s.CreatedAt}
+	}
+	writeJSON(w, http.StatusOK, proto.LogResponse{Snapshots: out})
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {

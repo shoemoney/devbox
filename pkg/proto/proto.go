@@ -11,9 +11,23 @@ const (
 	PathBlob    = "/v1/blob/"   // PUT /v1/blob/{hash}, auth: upload one blob's bytes
 	PathPush    = "/v1/push"    // POST, auth: commit a snapshot
 	PathHead    = "/v1/head"    // GET ?share=, auth: current head snapshot id
+	PathLog     = "/v1/log"     // GET ?share=, auth: snapshot history
 	PathEvents  = "/v1/events"  // GET ?share=, auth: SSE stream of change events
 	PathMetrics = "/metrics"    // GET, no auth: Prometheus text exposition
 )
+
+// SnapshotInfo is one entry in a share's history.
+type SnapshotInfo struct {
+	ID        string `json:"id"`
+	Parent    string `json:"parent"`
+	Device    string `json:"device"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// LogResponse is a share's snapshot history, newest first.
+type LogResponse struct {
+	Snapshots []SnapshotInfo `json:"snapshots"`
+}
 
 // Event is a hub change notification, delivered as one SSE "data:" line (JSON).
 type Event struct {

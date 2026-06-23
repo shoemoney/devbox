@@ -15,6 +15,7 @@ import (
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
+	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
 )
 
 var version = "0.0.0-dev"
@@ -36,6 +37,7 @@ func main() {
 		tokenCmd(),
 		readonlyCmd(),
 		revokeCmd(),
+		gcCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -153,6 +155,103 @@ func revokeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
 	return cmd
+}
+
+func gcCmd() *cobra.Command {
+	var data string
+	var keep int
+	cmd := &cobra.Command{
+		Use:   "gc",
+		Short: "🧹 prune old snapshots and unreferenced chunks",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			store, err := blobstore.NewDisk(filepath.Join(data, "blobs"))
+			if err != nil {
+				return err
+			}
+			snaps, chunks, err := runGC(db, store, keep)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "🧹 gc: removed %d snapshots, %d chunks (freed)\n", snaps, chunks)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	cmd.Flags().IntVar(&keep, "keep", 10, "snapshots to keep per share (newest)")
+	return cmd
+}
+
+// runGC prunes deletable snapshots (keeping the head + `keep` newest per share),
+// then deletes any chunk that lost its last reference. It returns how many
+// snapshots and chunks were removed. Deleting an already-absent blob is fine —
+// the metadata is the source of truth.
+func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err error) {
+	shares, err := db.ShareNames()
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, share := range shares {
+		ids, err := db.DeletableSnapshots(share, keep)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, id := range ids {
+			hashes, err := manifestChunks(store, id)
+			if err != nil {
+				return 0, 0, err
+			}
+			if err := db.DeleteSnapshot(id, hashes); err != nil {
+				return 0, 0, err
+			}
+			if err := store.Delete(id); err != nil && err != blobstore.ErrNotFound {
+				return 0, 0, err
+			}
+			snaps++
+		}
+	}
+
+	unref, err := db.UnreferencedChunks()
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, h := range unref {
+		if err := store.Delete(h); err != nil && err != blobstore.ErrNotFound {
+			return 0, 0, err
+		}
+		if err := db.DeleteChunkRow(h); err != nil {
+			return 0, 0, err
+		}
+	}
+	return snaps, len(unref), nil
+}
+
+// manifestChunks returns the distinct chunk hashes referenced by the snapshot
+// whose id is its manifest blob key.
+func manifestChunks(store blobstore.Store, snapshotID string) ([]string, error) {
+	b, err := store.Get(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	m, err := manifest.Unmarshal(b)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var hashes []string
+	for _, e := range m.Entries {
+		for _, h := range e.Chunks {
+			if !seen[h] {
+				seen[h] = true
+				hashes = append(hashes, h)
+			}
+		}
+	}
+	return hashes, nil
 }
 
 func randHex(n int) (string, error) {

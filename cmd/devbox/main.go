@@ -35,6 +35,8 @@ func main() {
 		joinCmd(),
 		publishCmd(),
 		mountCmd(),
+		logCmd(),
+		restoreCmd(),
 		startCmd(),
 		statusCmd(),
 		versionCmd(),
@@ -249,6 +251,113 @@ func upsertMount(mounts []config.Mount, m config.Mount) []config.Mount {
 		}
 	}
 	return append(mounts, m)
+}
+
+func logCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "log <share>",
+		Short: "🕓 show a share's snapshot history",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share := args[0]
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			snaps, err := c.Log(share)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, s := range snaps {
+				ts := time.Unix(s.CreatedAt, 0).Format("2006-01-02 15:04:05")
+				fmt.Fprintf(out, "%s  %s  %s\n", short(s.ID), ts, s.Device)
+			}
+			return nil
+		},
+	}
+}
+
+func restoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore <share> <snapshot> [path]",
+		Short: "↩️  restore a share (or one path) to an older snapshot",
+		Args:  cobra.RangeArgs(2, 3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share, snapshot := args[0], args[1]
+			var onlyPath string
+			if len(args) == 3 {
+				onlyPath = args[2]
+			}
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			m, ok := findMount(d.Mounts, share)
+			if !ok {
+				return fmt.Errorf("no mount for share %q — mount it first", share)
+			}
+
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			ig, err := syncer.LoadIgnore(m.Local)
+			if err != nil {
+				return err
+			}
+			guard, err := secret.New(nil)
+			if err != nil {
+				return err
+			}
+			host, _ := os.Hostname()
+			res, err := syncer.Restore(c, m.Local, share, m.Subpath, snapshot, onlyPath, host, time.Now().UnixNano(), ig, guard, nil)
+			if err != nil {
+				return err
+			}
+
+			st, err := config.LoadState(dir)
+			if err != nil {
+				return err
+			}
+			st[share+"\x00"+m.Subpath+"\x00"+m.Local] = res.Snapshot
+			if err := config.SaveState(dir, st); err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			what := share
+			if onlyPath != "" {
+				what = share + "/" + onlyPath
+			}
+			fmt.Fprintf(out, "↩️  restored %s -> snapshot %s\n", what, short(res.Snapshot))
+			return nil
+		},
+	}
+}
+
+// findMount returns the first configured mount for share.
+func findMount(mounts []config.Mount, share string) (config.Mount, bool) {
+	for _, m := range mounts {
+		if m.Share == share {
+			return m, true
+		}
+	}
+	return config.Mount{}, false
 }
 
 func startCmd() *cobra.Command {

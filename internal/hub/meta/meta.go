@@ -283,6 +283,128 @@ func (d *DB) ChunkRefcount(hash string) (int, error) {
 	return rc, err
 }
 
+// --- history & gc -------------------------------------------------------- //
+
+// SnapInfo is one entry in a share's snapshot history.
+type SnapInfo struct {
+	ID        string
+	Parent    string
+	Device    string
+	CreatedAt int64
+}
+
+// SnapshotLog returns a share's snapshots newest-first, capped at limit.
+func (d *DB) SnapshotLog(share string, limit int) ([]SnapInfo, error) {
+	rows, err := d.sql.Query(
+		`SELECT id, COALESCE(parent_id,''), device_id, created_at
+		 FROM snapshots WHERE share=? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+		share, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SnapInfo
+	for rows.Next() {
+		var s SnapInfo
+		if err := rows.Scan(&s.ID, &s.Parent, &s.Device, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ShareNames lists every share name.
+func (d *DB) ShareNames() ([]string, error) {
+	rows, err := d.sql.Query(`SELECT name FROM shares`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// DeletableSnapshots returns the snapshot ids GC may prune for a share: every
+// snapshot except the current head and the `keep` most recent (by created_at).
+// The kept set and the head can overlap; either way they are never returned.
+func (d *DB) DeletableSnapshots(share string, keep int) ([]string, error) {
+	head, _, err := d.ShareHead(share)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.sql.Query(
+		`SELECT id FROM snapshots WHERE share=? ORDER BY created_at DESC, rowid DESC`, share)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var del []string
+	for i := 0; rows.Next(); i++ {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if i < keep || id == head {
+			continue // protected: within the keep window or the live head
+		}
+		del = append(del, id)
+	}
+	return del, rows.Err()
+}
+
+// DeleteSnapshot removes a snapshot row and decrements the refcount of each
+// distinct chunk hash it referenced, all in one transaction. The caller derives
+// chunkHashes from the snapshot's manifest (distinct, as AddSnapshot counted them).
+func (d *DB) DeleteSnapshot(id string, chunkHashes []string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM snapshots WHERE id=?`, id); err != nil {
+		return err
+	}
+	for _, h := range chunkHashes {
+		if _, err := tx.Exec(`UPDATE chunks SET refcount=refcount-1 WHERE hash=?`, h); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// UnreferencedChunks lists chunk hashes whose refcount has dropped to zero (or
+// below): their bytes are no longer reachable and the GC may delete them.
+func (d *DB) UnreferencedChunks() ([]string, error) {
+	rows, err := d.sql.Query(`SELECT hash FROM chunks WHERE refcount<=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// DeleteChunkRow removes a chunk's metadata row (after its blob is gone).
+func (d *DB) DeleteChunkRow(hash string) error {
+	_, err := d.sql.Exec(`DELETE FROM chunks WHERE hash=?`, hash)
+	return err
+}
+
 func nullable(v int64) any {
 	if v == 0 {
 		return nil

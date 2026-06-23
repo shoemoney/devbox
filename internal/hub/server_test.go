@@ -179,6 +179,19 @@ func TestHubHappyPath(t *testing.T) {
 		t.Fatalf("head = %q, want %q", head.Head, manifestHash)
 	}
 
+	// GET log returns the share's snapshot history (one entry so far).
+	status, body = do(t, "GET", base+proto.PathLog+"?share="+share, bearer, nil)
+	if status != http.StatusOK {
+		t.Fatalf("log status = %d, body = %s", status, body)
+	}
+	var log proto.LogResponse
+	if err := json.Unmarshal(body, &log); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if len(log.Snapshots) != 1 || log.Snapshots[0].ID != manifestHash {
+		t.Fatalf("log = %+v, want one snapshot %s", log.Snapshots, manifestHash)
+	}
+
 	// /metrics exposes the gauges.
 	status, body = do(t, "GET", base+proto.PathMetrics, "", nil)
 	if status != http.StatusOK {

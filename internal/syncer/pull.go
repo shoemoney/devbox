@@ -143,6 +143,57 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 	return res, nil
 }
 
+// Restore rewrites the local tree to match an older snapshot, then pushes it as a
+// new head — so a restore is itself a reversible snapshot, never a history rewrite.
+//
+// With onlyPath set, just that one file is brought back to its snapshot content
+// (the rest of the tree is untouched). Otherwise the whole mounted subtree is made
+// to match the snapshot: every snapshot entry is written and any local path the
+// snapshot doesn't contain is deleted. A bad onlyPath (not in the snapshot) errors
+// without touching the tree.
+func Restore(c *transport.Client, root, share, subpath, snapshot, onlyPath, host string, now int64, ig *ignore.Matcher, guard *secret.Guard, hk *hooks.Runner) (Result, error) {
+	full, err := fetchManifest(c, snapshot)
+	if err != nil {
+		return Result{}, err
+	}
+	target := filterStrip(full, subpath)
+	idx := indexEntries(target)
+
+	if onlyPath != "" {
+		e, ok := idx[onlyPath]
+		if !ok {
+			return Result{}, fmt.Errorf("restore: path %q not in snapshot %s", onlyPath, snapshot)
+		}
+		if _, err := writeEntry(c, root, e); err != nil {
+			return Result{}, err
+		}
+	} else {
+		for _, e := range target.Entries {
+			if _, err := writeEntry(c, root, e); err != nil {
+				return Result{}, err
+			}
+		}
+		// Delete anything present locally but absent from the snapshot.
+		local, _, err := manifest.Build(root, ig, guard)
+		if err != nil {
+			return Result{}, err
+		}
+		for _, e := range local.Entries {
+			if _, keep := idx[e.Path]; !keep {
+				if err := deleteFile(root, e.Path); err != nil {
+					return Result{}, err
+				}
+			}
+		}
+	}
+
+	head, err := c.Head(share)
+	if err != nil {
+		return Result{}, err
+	}
+	return Push(c, root, share, subpath, ig, guard, head, hk)
+}
+
 // Sync brings a mount into agreement with the hub: pull+merge to head, then push
 // the merged local state; retries if the hub advanced underneath. Returns the new
 // base snapshot and the pull result.
