@@ -39,17 +39,39 @@ func (id Identity) Fingerprint() string {
 	return hex.EncodeToString(sum[:8]) // 16 hex chars
 }
 
-// Save writes the keypair under dir (private key 0600, dir 0700).
+// Save writes the keypair under dir atomically (private key 0600, dir 0700).
 func (id Identity) Save(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	priv := pem.EncodeToMemory(&pem.Block{Type: "DEVBOX PRIVATE KEY", Bytes: id.Priv})
-	if err := os.WriteFile(filepath.Join(dir, privName), priv, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, privName), priv, 0o600); err != nil {
 		return err
 	}
 	pub := pem.EncodeToMemory(&pem.Block{Type: "DEVBOX PUBLIC KEY", Bytes: id.Pub})
-	return os.WriteFile(filepath.Join(dir, pubName), pub, 0o644)
+	return writeFileAtomic(filepath.Join(dir, pubName), pub, 0o644)
+}
+
+// writeFileAtomic writes data to path via a temp file + rename. CreateTemp makes
+// the temp 0600, so the private key is never briefly world-readable.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Load reads a keypair previously written by Save.
@@ -59,7 +81,7 @@ func Load(dir string) (Identity, error) {
 		return Identity{}, err
 	}
 	block, _ := pem.Decode(raw)
-	if block == nil {
+	if block == nil || block.Type != "DEVBOX PRIVATE KEY" {
 		return Identity{}, fmt.Errorf("identity: bad private key PEM in %s", dir)
 	}
 	priv := ed25519.PrivateKey(block.Bytes)

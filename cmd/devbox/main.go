@@ -91,7 +91,10 @@ func statusCmd() *cobra.Command {
 				fmt.Fprintln(out, "not joined yet — run: devbox join <hub> <token>")
 				return nil
 			}
-			d, _ := config.LoadDaemon(dir)
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return fmt.Errorf("reading config: %w", err)
+			}
 			fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
 			fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
 			fmt.Fprintf(out, "mounts:  %d\n", len(d.Mounts))

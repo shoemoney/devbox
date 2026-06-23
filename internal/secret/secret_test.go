@@ -12,6 +12,7 @@ func TestDefaultGuard(t *testing.T) {
 		"key.pem", "server.key", "cert.p12", "store.pfx", "vault.kdbx",
 		"id_rsa", "id_ed25519", "id_ed25519.pub",
 		"secrets/aws.json", "secrets/sub/token", ".aws/credentials", ".ssh/id_rsa",
+		"secrets", // a regular file literally named "secrets" must also be blocked
 	}
 	for _, p := range blocked {
 		if !g.Blocked(p) {

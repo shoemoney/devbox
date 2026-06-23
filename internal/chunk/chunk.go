@@ -7,6 +7,8 @@ package chunk
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"io"
 
 	fastcdc "github.com/jotfs/fastcdc-go"
 	"github.com/zeebo/blake3"
@@ -33,14 +35,16 @@ type Chunk struct {
 // each chunk starts where the previous ended, and the sizes sum to len(data).
 //
 // Inputs smaller than MinSize yield a single chunk. Empty input yields zero
-// chunks.
+// chunks. A genuine read error is returned (never silently truncated) — this
+// matters once Split streams from an io.Reader, where a mid-input error would
+// otherwise produce a short, valid-looking chunk list with the wrong hash.
 //
 // ponytail: Split is in-memory — it takes the whole []byte and the underlying
 // chunker reads from a bytes.Reader over it. Streaming large inputs from an
 // io.Reader without buffering the entire payload is the upgrade path.
-func Split(data []byte) []Chunk {
+func Split(data []byte) ([]Chunk, error) {
 	if len(data) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	chunker, err := fastcdc.NewChunker(bytes.NewReader(data), fastcdc.Options{
@@ -49,19 +53,17 @@ func Split(data []byte) []Chunk {
 		MaxSize:     MaxSize,
 	})
 	if err != nil {
-		// Options are compile-time constants that satisfy the library's
-		// validation, so construction cannot fail in practice. Fall back to
-		// treating the whole input as one chunk rather than panicking.
-		return []Chunk{{Hash: Hash(data), Offset: 0, Size: int64(len(data))}}
+		return nil, err
 	}
 
 	var chunks []Chunk
 	for {
 		c, err := chunker.Next()
-		if err != nil {
-			// io.EOF (or any error) ends iteration; on a bytes.Reader the only
-			// terminal condition is EOF after the final chunk.
+		if errors.Is(err, io.EOF) {
 			break
+		}
+		if err != nil {
+			return nil, err
 		}
 		chunks = append(chunks, Chunk{
 			Hash:   Hash(c.Data),
@@ -69,7 +71,7 @@ func Split(data []byte) []Chunk {
 			Size:   int64(c.Length),
 		})
 	}
-	return chunks
+	return chunks, nil
 }
 
 // Hash returns the BLAKE3-256 digest of b as a lowercase hex string.

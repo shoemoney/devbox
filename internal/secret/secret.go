@@ -43,7 +43,9 @@ func New(extra []string) (*Guard, error) {
 }
 
 // Blocked reports whether path (forward-slash, relative to the share root) is a
-// secret that must not be uploaded.
+// secret that must not be uploaded. It checks the path as both a file and a
+// directory name so a dir-only pattern like "secrets/" also blocks a regular
+// file literally named "secrets" — the secret guarantee should never slip.
 func (g *Guard) Blocked(path string) bool {
-	return g.m.Match(path, false)
+	return g.m.Match(path, false) || g.m.Match(path, true)
 }

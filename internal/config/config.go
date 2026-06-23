@@ -61,15 +61,25 @@ func LoadDaemon(dir string) (Daemon, error) {
 	return d, toml.Unmarshal(b, &d)
 }
 
-// SaveDaemon writes daemon.toml under dir (creating dir 0700).
+// SaveDaemon writes daemon.toml under dir atomically (temp file + rename), so a
+// crash or encode error never leaves a truncated config that forgets the device's
+// hub and mounts. os.Rename replaces the target atomically on POSIX and Windows.
 func SaveDaemon(dir string, d Daemon) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.Create(daemonPath(dir))
+	f, err := os.CreateTemp(dir, ".daemon-*.tmp")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(d)
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if err := toml.NewEncoder(f).Encode(d); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, daemonPath(dir))
 }

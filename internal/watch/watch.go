@@ -82,6 +82,15 @@ func (w *Watcher) loop() {
 			if timer == nil {
 				timer = time.NewTimer(w.debounce)
 			} else {
+				// Stop and drain any already-buffered tick before Reset, so a
+				// tick that fired concurrently with this event can't leak through
+				// and trigger a premature (pre-debounce) signal.
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
 				timer.Reset(w.debounce)
 			}
 			timerC = timer.C

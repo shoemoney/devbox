@@ -73,8 +73,12 @@ func Build(root string, ig *ignore.Matcher, guard *secret.Guard) (Manifest, []st
 		if err != nil {
 			return err
 		}
+		cs, err := chunk.Split(data)
+		if err != nil {
+			return fmt.Errorf("chunk %s: %w", rel, err)
+		}
 		var hashes []string
-		for _, c := range chunk.Split(data) {
+		for _, c := range cs {
 			hashes = append(hashes, c.Hash)
 		}
 		entries = append(entries, Entry{
