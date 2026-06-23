@@ -59,8 +59,16 @@ func main() {
 		resumeCmd(),
 		statusCmd(),
 		doctorCmd(),
+		setupCmd(),
 		versionCmd(),
 	)
+	// First run: on a bare `devbox` (no subcommand) on a terminal, offer the setup
+	// wizard if this machine isn't joined yet and the user hasn't opted out.
+	if len(os.Args) == 1 {
+		if dir, err := config.Dir(); err == nil && maybeOfferSetup(dir) {
+			return
+		}
+	}
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -83,39 +91,44 @@ func joinCmd() *cobra.Command {
 		Short: "🎟️  enroll this device against a hub",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			hubURL, token := args[0], args[1]
 			dir, err := config.Dir()
 			if err != nil {
 				return err
 			}
-			id, err := identity.LoadOrCreate(dir)
+			resp, err := joinHub(dir, args[0], args[1])
 			if err != nil {
 				return err
 			}
-			name, _ := os.Hostname()
-
-			c := transport.New(hubURL)
-			resp, err := c.Join(token, name, id.Pub, id.Priv)
-			if err != nil {
-				return err
-			}
-
-			d, err := config.LoadDaemon(dir)
-			if err != nil {
-				return err
-			}
-			d.Hub, d.DeviceID, d.Bearer = hubURL, resp.DeviceID, resp.Bearer
-			if err := config.SaveDaemon(dir, d); err != nil {
-				return err
-			}
-
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "device: %s\n", resp.DeviceID)
-			fmt.Fprintf(out, "hub:    %s\n", hubURL)
+			fmt.Fprintf(out, "hub:    %s\n", args[0])
 			fmt.Fprintln(out, "✅ joined")
 			return nil
 		},
 	}
+}
+
+// joinHub enrolls this device against hubURL with token and persists the bearer
+// to the daemon config. Shared by `devbox join` and the first-run setup wizard.
+func joinHub(dir, hubURL, token string) (proto.JoinResponse, error) {
+	id, err := identity.LoadOrCreate(dir)
+	if err != nil {
+		return proto.JoinResponse{}, err
+	}
+	name, _ := os.Hostname()
+	resp, err := transport.New(hubURL).Join(token, name, id.Pub, id.Priv)
+	if err != nil {
+		return proto.JoinResponse{}, err
+	}
+	d, err := config.LoadDaemon(dir)
+	if err != nil {
+		return proto.JoinResponse{}, err
+	}
+	d.Hub, d.DeviceID, d.Bearer = hubURL, resp.DeviceID, resp.Bearer
+	if err := config.SaveDaemon(dir, d); err != nil {
+		return proto.JoinResponse{}, err
+	}
+	return resp, nil
 }
 
 func publishCmd() *cobra.Command {
