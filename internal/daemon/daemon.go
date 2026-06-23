@@ -7,6 +7,7 @@ package daemon
 import (
 	"context"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -162,8 +163,15 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 	}()
 
 	// Periodic rescan: safety net so the mount keeps converging even if the
-	// watcher never started (inotify limit) or an event was missed.
+	// watcher never started (inotify limit) or an event was missed. Stagger the
+	// first tick by a random offset so many mounts don't all rebuild manifests in
+	// lockstep every interval (a self-synchronized load spike on big trees).
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(rand.Int63n(int64(rescanInterval)))):
+		}
 		t := time.NewTicker(rescanInterval)
 		defer t.Stop()
 		for {

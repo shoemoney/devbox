@@ -37,3 +37,12 @@ func TestJitteredStaysWithinBand(t *testing.T) {
 		t.Fatal("jittered(0) should be 0")
 	}
 }
+
+// jittered must not panic on sub-2ns durations (rand.Int63n(0) would).
+func TestJitteredTinyDurationsDontPanic(t *testing.T) {
+	for _, d := range []time.Duration{-5, -1, 0, 1, 2, 3} {
+		if got := jittered(d); d >= 2 && got < 0 {
+			t.Fatalf("jittered(%d) = %d, unexpectedly negative", d, got)
+		}
+	}
+}
