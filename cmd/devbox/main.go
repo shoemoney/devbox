@@ -887,6 +887,22 @@ func doctorCmd() *cobra.Command {
 			}
 			_ = os.RemoveAll(probe)
 
+			// macOS Full Disk Access — needed to sync TCC-protected folders
+			// (~/Desktop, ~/Documents, ~/Downloads, iCloud). A background daemon
+			// can't show the per-folder prompt, so without FDA those mounts fail
+			// silently. We test the actual protected mounts (honest, version-proof):
+			// only the ones we'd really sync, and only flag the ones truly blocked.
+			if prot := protectedMounts(d.Mounts); len(prot) > 0 {
+				if blocked := blockedByTCC(prot); len(blocked) == 0 {
+					check(true, false, "full disk access", "protected mounts readable ("+strings.Join(prot, ", ")+")")
+				} else {
+					exe, _ := os.Executable()
+					check(false, false, "full disk access", "NOT granted — can't read "+strings.Join(blocked, ", ")+
+						"\n     fix: System Settings → Privacy & Security → Full Disk Access → + add "+exe+
+						"\n     open it: open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\"")
+				}
+			}
+
 			// Mounts: dir exists + writable.
 			check(len(d.Mounts) > 0, len(d.Mounts) == 0, "mounts", fmt.Sprintf("%d configured", len(d.Mounts)))
 			for _, m := range d.Mounts {

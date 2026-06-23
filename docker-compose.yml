@@ -1,0 +1,44 @@
+# devbox hub — drop-in for a NAS (TrueNAS SCALE, Synology, unRAID, any Docker host).
+#
+#   docker compose up -d --build                 # hub on :8088, data persisted, self-healing
+#   docker compose exec hub devbox-hub token --data /data   # mint a join token
+#   docker compose logs -f hub
+#
+# Devices then:  devbox setup   (point them at http://<nas-ip>:8088)
+
+services:
+  hub:
+    build: .
+    # Prefer a published image once you have one:
+    # image: git.shoemoney.ai/shoemoney/devbox-hub:latest
+    container_name: devbox-hub
+    restart: unless-stopped        # keep-alive + auto-restart + recover (crash & reboot)
+    ports:
+      - "8088:8088"                # hub API
+      # - "8099:8099"              # live dashboard — uncomment AND enable it in `command:` below
+    volumes:
+      - devbox-data:/data          # snapshots, blobs, token DB — survives upgrades
+    # Default serves the hub. To enable the live dashboard, swap in this command:
+    # command: ["serve","--data","/data","--listen","0.0.0.0:8088","--dashboard","--dashboard-addr","0.0.0.0:8099"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional self-heal: restarts the hub if its healthcheck goes unhealthy (Docker's
+  # restart policy only catches crashes, not a wedged-but-running process). Enable with:
+  #   docker compose --profile selfheal up -d
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: devbox-autoheal
+    restart: unless-stopped
+    profiles: ["selfheal"]
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  devbox-data:

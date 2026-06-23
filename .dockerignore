@@ -1,0 +1,14 @@
+# keep the build context small + reproducible. NB: do NOT exclude .go sources or
+# internal/hub/dashboard/index.html (it's go:embed'd into the hub binary).
+.git
+.gitignore
+.claude
+.playwright-mcp
+dist
+bin
+docs/images
+*.png
+*.pre-v2.bak
+README.md
+install.ps1
+deploy
