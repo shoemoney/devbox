@@ -106,8 +106,10 @@ mental model ("Dropbox you host") intact while unlocking scale and privacy.
 > a head-backfill + reworked GC). **Verified on a copy of the live `.10` hub DB** — 13 dev / 12 share /
 > 16 chunk preserved, `user_version 0→1`, 3 legacy cross-share heads repaired. `snapshot_chunks` is
 > **deferred to M9** (no consumer yet; the runner makes adding it a one-line migration), and `chunks.refcount`
-> stays the maintained ground truth until then. `restore`/`deploy` conflict-copy moves to **M8-3** (it
-> needs the sidecar's base/ancestor awareness — a naive version breaks restore-reproduces-snapshot).
+> stays the maintained ground truth until then. ✅ **`restore` conflict-copy shipped** (never-lose-a-byte on a
+> deliberate revert): it compares local against BOTH the snapshot and the hub head and preserves only genuinely
+> *uncommitted* edits — so a clean restore still reproduces the snapshot exactly (no sidecar needed; head is the
+> ancestor reference). `deploy` keeps its as-is behavior (read-only/pinned mounts have no uncommitted edits).
 
 **The bug (verified):** `server.go:300` sets `snapshotID := req.ManifestHash`, and `snapshots.id` is a
 **global** PK (`meta.go`). When two shares hold identical content their snapshot ids collide;
@@ -227,6 +229,12 @@ real fix here — without touching hub-as-source-of-truth.
 
 ### 5.5 🎛️ Conflict resolution & 3-way merge &nbsp;·&nbsp; effort: L &nbsp;·&nbsp; **M8 sidecar / M10 resolver**
 
+> 🦥 **Reassessed (ponytail):** the conflict **sidecar** (`{base, ours, theirs}` + `Entry.Binary` + pin/unpin)
+> only feeds the **M10 resolver**, which is demand-driven and not being built — so per the spec's own guard it's
+> **deferred to M10** (a producer with no consumer is the same YAGNI we cut from the control socket's `/events`).
+> The data-safety win that *did* warrant shipping now — preserving an uncommitted edit on `restore` — landed in
+> M8 *without* the sidecar (head is the ancestor reference; see §5.1). Build the sidecar when the resolver does.
+
 v1 already does whole-file 3-way merge and **already tracks the common ancestor** (the per-mount base
 snapshot in `state.json`); resolution back to the hub is **free** (any local write → next `Sync` push,
 no new wire verb). The one real gap: **conflict copies are amnesiac** — a `.conflict-<host>-<ts>` file
@@ -271,12 +279,12 @@ hasn't fixed yet.
 
 ```mermaid
 flowchart LR
-    M8["🏗️ M8 — Foundations<br/>refcount fix + migration runner ·<br/>principals/roles/invites (writes) ·<br/>conflict sidecar · control socket"]
+    M8["🏗️ M8 — Foundations ✅<br/>refcount fix + migration runner ·<br/>principals/roles/invites (writes) ·<br/>restore byte-safety · control socket"]
     M9["🔐 M9 — Trust &amp; durability<br/>read-side ACL · E2E (convergent) ·<br/>S3/R2 + Litestream HA"]
-    M10["🤝 M10 — Cluster &amp; merge<br/>LAN peer chunk-exchange ·<br/>interactive resolver + 3-way merge"]
+    M10["🤝 M10 — Cluster &amp; merge<br/>LAN peer chunk-exchange ·<br/>conflict sidecar + resolver + diff3"]
     M11["✨ M11 — Polish<br/>full TUI · power sanity ·<br/>groups · packfile batching"]
     M8 --> M9 --> M10 --> M11
-    style M8 fill:#1e3a5a,stroke:#4F9CF9,color:#fff
+    style M8 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M9 fill:#3a1e5a,stroke:#a06bff,color:#fff
     style M10 fill:#1e5a3a,stroke:#51cf66,color:#fff
     style M11 fill:#5a4a1e,stroke:#ffd43b,color:#fff
@@ -284,9 +292,9 @@ flowchart LR
 
 | Milestone | Ships | Gated by |
 |---|---|---|
-| 🏗️ **M8 — Foundations** 🔨 | ✅ migration runner (`PRAGMA user_version`) · ✅ per-`(share,id)` snapshots + reworked GC (refcount undercount fixed) · ✅ daemon **control socket** + real `pause`/`resume` · ✅ **M8a teams COMPLETE**: principals/roles + write enforcement + members read + **device-facing invites with attenuation** (admin CLI + `devbox invite`/`members`) — **cross-machine fleet-verified on arm64 Pis** · ⬜ conflict sidecar + `Entry.Binary` + pin + conflict-copy on `restore`/`deploy` (M8-3) · ⬜ `snapshot_chunks` edge table (deferred to M9 — no consumer yet) — **3 migrations verified on a copy of the real hub DB, chaining 0→1→2→3** | — |
+| 🏗️ **M8 — Foundations** ✅ | ✅ migration runner (`PRAGMA user_version`) · ✅ per-`(share,id)` snapshots + reworked GC (refcount undercount fixed) · ✅ daemon **control socket** + real `pause`/`resume` · ✅ **M8a teams**: principals/roles + write enforcement + members read + **device-facing invites with attenuation** — **cross-machine fleet-verified on arm64 Pis** · ✅ **`restore` conflict-copy** (never-lose-a-byte on revert) · ↪️ conflict **sidecar** + `Entry.Binary` + pin → **moved to M10** (only the resolver consumes it) · ↪️ `snapshot_chunks` edge table → **M9** (no consumer yet) — **3 migrations verified on a copy of the real hub DB (0→1→2→3); justified-now scope COMPLETE** | — |
 | 🔐 **M9 — Trust & durability** | **read-side ACL** (deny-by-default) · **E2E** per-share keyed-convergent encryption · **S3/R2** blob backend + **Litestream** HA | M8 (membership, migration runner, refcounts) |
-| 🤝 **M10 — Cluster & merge** | **LAN peer chunk-exchange** (P2P, hub-authoritative) · **interactive conflict resolver** + **diff3 3-way text merge** | M8 sidecar · M9 convergent-encryption co-design |
+| 🤝 **M10 — Cluster & merge** | **LAN peer chunk-exchange** (P2P, hub-authoritative) · **conflict sidecar** (`{base,ours,theirs}` + `Entry.Binary` + pin) · **interactive conflict resolver** + **diff3 3-way text merge** | M9 convergent-encryption co-design (sidecar ships with its resolver) |
 | ✨ **M11 — Polish** | **full TUI** dashboard · **power** sanity (battery/metered/windows) · groups · packfile batching | M8 control socket |
 
 ---

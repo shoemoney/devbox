@@ -49,7 +49,7 @@
 > | M7 — Hardening: `devbox doctor`, reconnect/backoff, rescan fallback, name-clash, release builds | ✅ done — **doctor/stop/hooks + share-name guard + dead-watcher rescan fleet-verified** 🛡️ |
 > | M7.5 — Adversarial security/data-loss audit + fixes (path-traversal, blob integrity, never-clobber, safe GC) | ✅ done — **26 findings, all promise-breakers fixed, race-clean** 🔐 |
 > | M7.6 — Hardening: fsync durability · DoS caps + timeouts · pidfile PID-reuse guard · join proof-of-possession | ✅ done — fleet-verified on arm64 🛡️ |
-> | 🔮 **M8 — v2 Foundations**: migration runner · per-`(share,id)` snapshots · control socket + `pause`/`resume` · **M8a teams** (principals/roles/invites + write enforcement) | 🔨 in progress — **M8a complete & cross-machine fleet-verified** (Pi `.13` owner invited an editor, Pi `.15` redeemed & pushed); 3 migrations verified on a copy of the real hub DB 🏗️👥 |
+> | 🔮 **M8 — v2 Foundations**: migration runner · per-`(share,id)` snapshots · control socket + `pause`/`resume` · **M8a teams** · `restore` byte-safety | ✅ **justified-now scope complete & fleet-verified** (Pi `.13` owner invited an editor, Pi `.15` redeemed & pushed); 3 migrations verified on a copy of the real hub DB. M9–M11 stay demand-driven 🏗️👥 |
 
 ---
 
@@ -511,14 +511,14 @@ flowchart LR
 flowchart LR
     M6["M6 🕰️\nVersioning"] --> M65["M6.5 🚢\nDeploy"]
     M65 --> M7["M7 🛡️\nHardening\n+ M7.5/7.6 audit"]
-    M7 --> M8["M8 🏗️\nv2 Foundations\nmigration · control socket"]
+    M7 --> M8["M8 🏗️\nv2 Foundations\nmigration · teams · control socket"]
     M8 --> M9["M9 🔐\nTrust + HA\nACL · E2E · S3"]
     M9 --> M10["M10 🤝\nCluster + merge\nP2P · resolver"]
     M10 --> M11["M11 ✨\nPolish\nTUI · power"]
     style M6 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M65 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M7 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M8 fill:#5a4a1e,stroke:#ffd43b,color:#fff
+    style M8 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M9 fill:#0d1117,stroke:#4F9CF9,color:#fff
     style M10 fill:#0d1117,stroke:#4F9CF9,color:#fff
     style M11 fill:#0d1117,stroke:#4F9CF9,color:#fff
@@ -537,7 +537,7 @@ flowchart LR
 | ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, **60s rescan fallback** (survives dead/limited inotify watchers — PRD risk #1), share-name guard, release builds — fleet-verified |
 | ✅ | **M7.5 — Audit hardening** 🔐 | adversarial security/data-loss audit + fixes: blob-hash **path-traversal** blocked, **download blob-integrity** check, manifest-path **containment**, secret-guard **case-insensitive** + more patterns, **never-clobber** ignored/guarded files, **GC made safe** vs cross-share refcount undercount — all with regression tests, race-clean, fleet-verified |
 | ✅ | **M7.6 — Hardening complete** 🛡️ | 💽 **fsync durability** on atomic writes (power-loss safe), 🚪 **request size caps + server timeouts** (DoS), 🆔 **pidfile PID-reuse guard** (start-time token), 🪪 **join proof-of-possession** (ed25519 signature, token not burned on a bad request) — fanned out to parallel worktree agents, regression-tested, race-clean, fleet-verified |
-| 🔨 | **M8 — v2 Foundations** 🏗️ | 🔑 **schema migration runner** (`PRAGMA user_version`, transactional, `VACUUM INTO` backup, refuses a newer DB) · 🔢 **per-`(share,id)` snapshots** (fixes the cross-share refcount undercount; GC + head-backfill reworked) · 🎛️ **daemon control socket** (Unix socket, HTTP/1.1, `0600`) wiring `devbox pause`/`resume` + live-socket-aware `status` · 👥 **M8a: principals + per-share roles + write enforcement** (`devbox-hub member`/`principal`; legacy shares = v1, first grant flips to deny-by-default; role≥editor AND the writable clamp). **Both migrations verified on a copy of the real `.10` hub DB** (counts preserved, 3 legacy heads repaired, chains 0→1→2). 👀 read side (`GET /v1/members` + `devbox members`) · ✉️ **device-facing invites** (`POST /v1/invite` + `devbox invite`, privilege **attenuation** server-enforced via pure `meta.MayGrant`, self-seed on the legacy→explicit flip) — **cross-machine fleet-verified on arm64 Pis**. **Next in M8:** conflict sidecar + `restore`/`deploy` conflict-copy (M8-3, deferred — needs base-awareness); read-side ACL gating is M9 |
+| 🔨 | **M8 — v2 Foundations** 🏗️ | 🔑 **schema migration runner** (`PRAGMA user_version`, transactional, `VACUUM INTO` backup, refuses a newer DB) · 🔢 **per-`(share,id)` snapshots** (fixes the cross-share refcount undercount; GC + head-backfill reworked) · 🎛️ **daemon control socket** (Unix socket, HTTP/1.1, `0600`) wiring `devbox pause`/`resume` + live-socket-aware `status` · 👥 **M8a: principals + per-share roles + write enforcement** (`devbox-hub member`/`principal`; legacy shares = v1, first grant flips to deny-by-default; role≥editor AND the writable clamp). **Both migrations verified on a copy of the real `.10` hub DB** (counts preserved, 3 legacy heads repaired, chains 0→1→2). 👀 read side (`GET /v1/members` + `devbox members`) · ✉️ **device-facing invites** (`POST /v1/invite` + `devbox invite`, privilege **attenuation** via pure `meta.MayGrant`, self-seed on the legacy→explicit flip) — **cross-machine fleet-verified on arm64 Pis** · 🛟 **`restore` preserves uncommitted edits** (never-lose-a-byte on revert). **M8's justified-now scope is complete** — the conflict sidecar moves to M10 (only its resolver consumes it) and read-side ACL gating is M9 |
 
 <details>
 <summary>🔮 <b>still ahead in M8 / genuinely v2</b></summary>
