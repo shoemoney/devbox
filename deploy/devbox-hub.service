@@ -1,0 +1,16 @@
+# devbox hub systemd unit (installed at /etc/systemd/system/devbox-hub.service on the hub host).
+# Reboot-persistent, auto-restart. Runs as a normal user that owns the data dir.
+[Unit]
+Description=devbox hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/mnt/tank/apps/devbox/devbox-hub serve --data /mnt/tank/apps/devbox/data --listen 0.0.0.0:8088
+WorkingDirectory=/mnt/tank/apps/devbox
+User=shoemoney
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
