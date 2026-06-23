@@ -141,9 +141,10 @@ The highest-leverage theme — and the **membership layer E2E + P2P both need un
 > owner); the first `devbox-hub member set` flips it to **explicit/deny-by-default**. The push gate now
 > enforces `EffectiveRole ≥ editor AND the writable clamp` (legacy shares reduce to the v1 writable bit
 > exactly). Admin populate path: `devbox-hub member set/rm/list` + `principal`. Verified chaining 0→1→2 on
-> a copy of the real hub DB. **Still ahead in M8a:** the device-facing **invite** flow (bind `(principal,
-> share, role)` via the existing `/v1/join` PoP) + `GET /v1/members` / `POST /v1/members/role` endpoints +
-> `+s` reshare delegation. **Read-side gating stays M9.**
+> a copy of the real hub DB. ✅ Plus the read side: `GET /v1/members` + a `devbox members <share>` client
+> command. **Still ahead in M8a:** the device-facing **invite** flow (bind `(principal, share, role)` via the
+> existing `/v1/join` PoP, with privilege *attenuation* — a member can only grant ≤ their own role, and only
+> with `+s`) + `POST /v1/members/role`. **Read-side gating stays M9.**
 
 - **Principals.** Insert a *principal* (person/account/service) above the device:
   `devices.principal_id`. The **device stays the auth + revocation unit** (its ed25519 key never
