@@ -30,10 +30,11 @@
 ```
 
 > [!NOTE]
-> 🎉 **devbox v1 is feature-complete.** All milestones M0–M7 are built and
-> **fleet-verified on real hardware** (two Macs live-syncing through a hub on a NAS).
-> The [spec](docs/superpowers/specs/2026-06-22-devbox-design.md) is fully implemented;
-> every command below is wired up and tested. Star/watch and follow along. ⭐
+> 🎉 **devbox v1 is feature-complete** (M0–M7.6, **fleet-verified on real hardware** —
+> Macs + arm64 Pis live-syncing through a hub on a NAS) **and v2 has begun.** 🔮
+> The [v1 spec](docs/superpowers/specs/2026-06-22-devbox-design.md) is fully implemented;
+> the [v2 spec](docs/V2-SPEC.md) sequences M8→M11 — **M8 foundations are landing now.**
+> Star/watch and follow along. ⭐
 >
 > | Milestone | Status |
 > |---|---|
@@ -48,6 +49,7 @@
 > | M7 — Hardening: `devbox doctor`, reconnect/backoff, rescan fallback, name-clash, release builds | ✅ done — **doctor/stop/hooks + share-name guard + dead-watcher rescan fleet-verified** 🛡️ |
 > | M7.5 — Adversarial security/data-loss audit + fixes (path-traversal, blob integrity, never-clobber, safe GC) | ✅ done — **26 findings, all promise-breakers fixed, race-clean** 🔐 |
 > | M7.6 — Hardening: fsync durability · DoS caps + timeouts · pidfile PID-reuse guard · join proof-of-possession | ✅ done — fleet-verified on arm64 🛡️ |
+> | 🔮 **M8 — v2 Foundations**: schema migration runner · per-`(share,id)` snapshots · daemon control socket + `pause`/`resume` | 🔨 in progress — **migration runner + control socket shipped; verified on a copy of the real hub DB** 🏗️ |
 
 ---
 
@@ -326,7 +328,8 @@ container automatically. 🪄
 | `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
 | `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer |
-| `devbox pause` / `resume` / `peers` | ⏸️🌐 *Planned — need daemon IPC / a hub peers endpoint* |
+| `devbox pause` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket (M8) |
+| `devbox peers` | 🌐 *Planned — needs a hub peers endpoint (M10)* |
 
 </details>
 
@@ -498,27 +501,24 @@ flowchart LR
 
 > 🔮 **Looking ahead:** the full **[v2 design spec](docs/V2-SPEC.md)** — multi-owner teams + ACLs,
 > client-side E2E encryption (convergent, keeps dedup), LAN peer chunk-exchange + hub HA, 3-way merge,
-> and a TUI — sequenced M8→M11 by dependency. (Captured, not committed: only M8 foundations is justified today.)
+> and a TUI — sequenced M8→M11 by dependency. **M8 foundations are landing now**; M9–M11 stay
+> demand-driven (build E2E when an untrusted-hub user exists, P2P when the uplink hurts, the TUI when asked).
 
 ```mermaid
 flowchart LR
-    M0["M0 🦴\nSkeleton"] --> M1["M1 👀\nWatch + ignore\n+ secrets"]
-    M1 --> M2["M2 🛰️\nHub + push\n+ /metrics"]
-    M2 --> M3["M3 🔄\nTwo-way sync\n+ conflicts"]
-    M3 --> M4["M4 🔒\nRead-only\n+ bandwidth"]
-    M4 --> M5["M5 🪝\nHooks"]
-    M5 --> M6["M6 🕰️\nVersioning"]
-    M6 --> M65["M6.5 🚢\nDeploy"]
-    M65 --> M7["M7 🛡️\nHardening"]
-    style M0 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M1 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M2 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M3 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M4 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M5 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    M6["M6 🕰️\nVersioning"] --> M65["M6.5 🚢\nDeploy"]
+    M65 --> M7["M7 🛡️\nHardening\n+ M7.5/7.6 audit"]
+    M7 --> M8["M8 🏗️\nv2 Foundations\nmigration · control socket"]
+    M8 --> M9["M9 🔐\nTrust + HA\nACL · E2E · S3"]
+    M9 --> M10["M10 🤝\nCluster + merge\nP2P · resolver"]
+    M10 --> M11["M11 ✨\nPolish\nTUI · power"]
     style M6 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M65 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M7 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M8 fill:#5a4a1e,stroke:#ffd43b,color:#fff
+    style M9 fill:#0d1117,stroke:#4F9CF9,color:#fff
+    style M10 fill:#0d1117,stroke:#4F9CF9,color:#fff
+    style M11 fill:#0d1117,stroke:#4F9CF9,color:#fff
 ```
 
 | | Milestone | Deliverable |
@@ -534,15 +534,17 @@ flowchart LR
 | ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, **60s rescan fallback** (survives dead/limited inotify watchers — PRD risk #1), share-name guard, release builds — fleet-verified |
 | ✅ | **M7.5 — Audit hardening** 🔐 | adversarial security/data-loss audit + fixes: blob-hash **path-traversal** blocked, **download blob-integrity** check, manifest-path **containment**, secret-guard **case-insensitive** + more patterns, **never-clobber** ignored/guarded files, **GC made safe** vs cross-share refcount undercount — all with regression tests, race-clean, fleet-verified |
 | ✅ | **M7.6 — Hardening complete** 🛡️ | 💽 **fsync durability** on atomic writes (power-loss safe), 🚪 **request size caps + server timeouts** (DoS), 🆔 **pidfile PID-reuse guard** (start-time token), 🪪 **join proof-of-possession** (ed25519 signature, token not burned on a bad request) — fanned out to parallel worktree agents, regression-tested, race-clean, fleet-verified |
+| 🔨 | **M8 — v2 Foundations** 🏗️ | 🔑 **schema migration runner** (`PRAGMA user_version`, transactional, `VACUUM INTO` backup, refuses a newer DB) · 🔢 **per-`(share,id)` snapshots** (fixes the cross-share refcount undercount; GC + head-backfill reworked) — **verified on a copy of the real `.10` hub DB** (13 dev / 12 share / 16 chunk preserved, 3 legacy heads repaired) · 🎛️ **daemon control socket** (`internal/control`, Unix socket, HTTP/1.1, `0600`) wiring `devbox pause`/`resume` + live-socket-aware `status`. **Next in M8:** conflict sidecar + `restore`/`deploy` conflict-copy (M8-3), principals/roles/invites (M8a) |
 
 <details>
-<summary>🔮 <b>genuinely v2</b> (would change the single-owner model)</summary>
+<summary>🔮 <b>still ahead in M8 / genuinely v2</b></summary>
 
-Everything that protects data or the box is done. What's left only matters under a **different threat model** and is intentionally not in v1:
+Landed in M8 above: the migration runner, per-`(share,id)` snapshots, and the control socket. Still sequenced ahead:
 
-- 🔑 **Read-side ACL + deny-by-default writes** — only meaningful once shares span *multiple owners* (v2 teams); in v1 every enrolled device is yours, so a restrictive ACL would just break multi-device sync.
-- 🔢 **Per-`(share,id)` snapshot refcounts** — purely cosmetic now: the GC is ground-truth-safe regardless, and the collision only *under*-counts (never a leak or loss). Not worth a live-hub schema migration.
-- 📝 **Conflict-copy on explicit `restore`/`deploy`** — `restore` is a deliberate "go back" where overwriting is the intent; preserving every uncommitted edit as a `.conflict` is a v2 UX call.
+- 📝 **Conflict-copy on explicit `restore`/`deploy`** *(M8-3)* — needs base/ancestor awareness so it preserves only *uncommitted* edits without breaking restore-reproduces-snapshot; rides the conflict **sidecar**.
+- 👥 **Principals / roles / invites + write enforcement** *(M8a)* — the membership layer E2E + P2P both need underneath them.
+- 🔑 **Read-side ACL + deny-by-default writes** *(M9)* — only meaningful once shares span *multiple owners*; the genuinely new attack surface, staged after write-side.
+- 🔢 **`snapshot_chunks` edge table** *(M9)* — a derived-refcount source for E2E/P2P; deferred until a consumer exists (the migration runner makes adding it a one-liner).
 
 </details>
 

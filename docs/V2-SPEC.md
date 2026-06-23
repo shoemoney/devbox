@@ -4,13 +4,15 @@
 
 **From a single-owner sync tool → trusted, multi-person sync at cluster scale — still 100% self-hostable.**
 
-![status](https://img.shields.io/badge/status-%F0%9F%93%90%20spec%20%C2%B7%20planning-blueviolet?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%8F%97%EF%B8%8F%20M8%20building-ffd43b?style=for-the-badge)
 ![base](https://img.shields.io/badge/builds_on-v1%20(M0%E2%80%93M7.6)-00ADD8?style=for-the-badge)
 
 </div>
 
-> 📋 This is a **design spec**, not shipped code. v1 (M0–M7.6) is complete, audited, and hardened.
-> v2 is the next arc. Nothing here changes the v1 build until a milestone is planned and executed.
+> 📋 This is the v2 **design spec**. v1 (M0–M7.6) is complete, audited, and hardened; **M8
+> foundations are now landing on `main`** (see the ✅ marks in §5 and the roadmap). M9–M11 stay
+> captured-not-committed — demand-driven, built when a real user needs them. Every v2 change is
+> additive: the v1 CLI + hook contract is sacred.
 
 ---
 
@@ -98,6 +100,14 @@ mental model ("Dropbox you host") intact while unlocking scale and privacy.
 > mature tools. Effort: 👕 S/M/L/XL.
 
 ### 5.1 🏗️ Data-model cleanup &nbsp;·&nbsp; effort: M &nbsp;·&nbsp; **M8 (lands first)**
+
+> ✅ **Shipped (M8):** the `PRAGMA user_version` migration runner (transactional, `VACUUM INTO`
+> backup, refuses a newer DB) and the per-`(share,id)` snapshots re-key (fixing the undercount, with
+> a head-backfill + reworked GC). **Verified on a copy of the live `.10` hub DB** — 13 dev / 12 share /
+> 16 chunk preserved, `user_version 0→1`, 3 legacy cross-share heads repaired. `snapshot_chunks` is
+> **deferred to M9** (no consumer yet; the runner makes adding it a one-line migration), and `chunks.refcount`
+> stays the maintained ground truth until then. `restore`/`deploy` conflict-copy moves to **M8-3** (it
+> needs the sidecar's base/ancestor awareness — a naive version breaks restore-reproduces-snapshot).
 
 **The bug (verified):** `server.go:300` sets `snapshotID := req.ManifestHash`, and `snapshots.id` is a
 **global** PK (`meta.go`). When two shares hold identical content their snapshot ids collide;
@@ -216,11 +226,13 @@ records nothing about the merge that made it.
 
 ### 5.6 ✨ Client UX: TUI + power &nbsp;·&nbsp; effort: L &nbsp;·&nbsp; **M8 socket / M11 TUI+power**
 
-- **M8 — the load-bearing primitive: a daemon control socket** (`internal/control`). v1's daemon
-  exposes nothing; `status`/`conflicts` only read disk and can't see the *running* daemon. Add a
-  Unix socket (Windows named pipe), **HTTP/1.1 over it** (Docker's pattern — routing + JSON for free),
-  `0600`: `GET /state`, `GET /events` (SSE), `POST /pause|/resume`. This finally wires the
-  long-promised `devbox pause/resume` to the daemon and feeds everything below.
+- **M8 — the load-bearing primitive: a daemon control socket** (`internal/control`). ✅ **Shipped:**
+  Unix socket, **HTTP/1.1 over it** (Docker's pattern — routing + JSON for free), `0600`, with
+  `GET /state` + `POST /pause`/`/resume` wiring the long-promised `devbox pause`/`resume` and a
+  live-socket-aware `devbox status`. Windows is a stub (the fleet is mac/Linux). **`GET /events` (SSE)
+  was deliberately *not* built** — it only feeds the M11 TUI, which doesn't exist yet (ponytail: a
+  producer with no consumer; re-add the fan-out broker when the TUI lands). This finally lets the CLI
+  see the *running* daemon, not just disk.
 - **M11 — TUI** (`bubbletea`, Elm-architecture so `Update` never blocks): `devbox` with **no args**
   launches a live dashboard on a TTY (mounts, sync state, peers, conflicts, throughput) — and still
   prints plain status when piped, so scripts are unaffected.
@@ -256,7 +268,7 @@ flowchart LR
 
 | Milestone | Ships | Gated by |
 |---|---|---|
-| 🏗️ **M8 — Foundations** | per-`(share,id)` refcounts + `snapshot_chunks` + migration runner · principals/roles/invites/delegation + **write** enforcement · conflict sidecar + `Entry.Binary` + pin · daemon **control socket** + real `pause/resume` · conflict-copy on `restore`/`deploy` | — |
+| 🏗️ **M8 — Foundations** 🔨 | ✅ migration runner (`PRAGMA user_version`) · ✅ per-`(share,id)` snapshots + reworked GC (refcount undercount fixed; verified on a copy of the real hub DB) · ✅ daemon **control socket** + real `pause`/`resume` · ⬜ principals/roles/invites + **write** enforcement (M8a) · ⬜ conflict sidecar + `Entry.Binary` + pin + conflict-copy on `restore`/`deploy` (M8-3) · ⬜ `snapshot_chunks` edge table (deferred to M9 — no consumer yet) | — |
 | 🔐 **M9 — Trust & durability** | **read-side ACL** (deny-by-default) · **E2E** per-share keyed-convergent encryption · **S3/R2** blob backend + **Litestream** HA | M8 (membership, migration runner, refcounts) |
 | 🤝 **M10 — Cluster & merge** | **LAN peer chunk-exchange** (P2P, hub-authoritative) · **interactive conflict resolver** + **diff3 3-way text merge** | M8 sidecar · M9 convergent-encryption co-design |
 | ✨ **M11 — Polish** | **full TUI** dashboard · **power** sanity (battery/metered/windows) · groups · packfile batching | M8 control socket |
