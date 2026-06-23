@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
@@ -25,9 +26,10 @@ import (
 // Server is the devbox hub: metadata in db, blob bytes in store, change events
 // fanned out via broker.
 type Server struct {
-	db     *meta.DB
-	store  blobstore.Store
-	broker *broker
+	db        *meta.DB
+	store     blobstore.Store
+	broker    *broker
+	publishMu sync.Mutex // serializes publish so the case-clash check + create is atomic
 }
 
 // NewServer builds a hub server over the given metadata store and blob store.
@@ -127,6 +129,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, deviceID 
 	if !decode(w, r, &req) {
 		return
 	}
+	// Serialize: the case-clash check below reads all names then creates one, so
+	// two concurrent publishes of "Foo"/"foo" must not both pass the check.
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
 	existing, err := s.db.ShareNames()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

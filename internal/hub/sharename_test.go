@@ -18,6 +18,7 @@ func TestValidateShareName(t *testing.T) {
 		{"a\\b", false},     // backslash
 		{"..", false},       // traversal
 		{".hidden", false},  // leading dot
+		{"trail.", false},   // trailing dot (Windows strips it)
 		{"-flag", false},    // leading dash
 		{"sp ace", false},   // interior space
 		{"emoji🎉", false},  // non-ASCII

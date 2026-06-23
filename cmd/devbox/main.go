@@ -475,9 +475,6 @@ func startCmd() *cobra.Command {
 			if len(cfg.Mounts) == 0 {
 				return fmt.Errorf("no mounts — run: devbox mount <share> <dir>")
 			}
-			if pid, ok := runningPid(dir); ok {
-				return fmt.Errorf("daemon already running (pid %d) — run: devbox stop", pid)
-			}
 			if err := writePid(dir); err != nil {
 				return err
 			}
@@ -577,11 +574,34 @@ func stopCmd() *cobra.Command {
 
 func pidPath(dir string) string { return filepath.Join(dir, "daemon.pid") }
 
+// writePid atomically claims the pidfile via O_EXCL so two `devbox start`
+// invocations can't both think they're the only daemon. If the file already
+// exists it arbitrates: a live pid means refuse; a stale pid (crashed daemon)
+// is removed and the claim retried.
 func writePid(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(pidPath(dir), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	for {
+		f, err := os.OpenFile(pidPath(dir), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, werr := f.WriteString(strconv.Itoa(os.Getpid()))
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			return werr
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		if pid, ok := runningPid(dir); ok {
+			return fmt.Errorf("daemon already running (pid %d) — run: devbox stop", pid)
+		}
+		if rerr := os.Remove(pidPath(dir)); rerr != nil && !os.IsNotExist(rerr) {
+			return rerr
+		}
+		// Stale pidfile removed; loop retries the exclusive create.
+	}
 }
 
 func removePid(dir string) { _ = os.Remove(pidPath(dir)) }

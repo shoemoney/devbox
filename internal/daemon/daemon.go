@@ -138,7 +138,7 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 			}
 			// A stream that lived a while is a transient drop, not a hard failure:
 			// reset so the retry is prompt instead of inheriting a grown delay.
-			if time.Since(start) > backoffMax {
+			if time.Since(start) > healthyStream {
 				backoff = 0
 			}
 			backoff = nextBackoff(backoff)

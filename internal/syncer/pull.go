@@ -210,7 +210,12 @@ func applySnapshot(c *transport.Client, root, subpath, snapshot, onlyPath string
 			return 0, err
 		}
 	}
-	// Delete anything present locally but absent from the snapshot.
+	// Delete tracked files present locally but absent from the snapshot. We diff
+	// against manifest.Build (ignore- + secret-guard-filtered) ON PURPOSE: a
+	// restore/deploy must NOT delete a user's .devignore'd runtime files (caches,
+	// logs) or local secrets — those were never in any snapshot, so "match the
+	// snapshot" leaves them untouched. Tracked extras (e.g. a file added in a newer
+	// snapshot) are still removed. ponytail: never lose a byte we didn't sync.
 	local, _, err := manifest.Build(root, ig, guard)
 	if err != nil {
 		return 0, err

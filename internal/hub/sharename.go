@@ -32,6 +32,8 @@ func ValidateShareName(name string, existing []string) error {
 		return fmt.Errorf("share name %q is reserved", name)
 	case strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-"):
 		return fmt.Errorf("share name %q must not start with '.' or '-'", name)
+	case strings.HasSuffix(name, "."):
+		return fmt.Errorf("share name %q must not end with '.' (Windows strips it)", name)
 	}
 	for _, r := range name {
 		switch {
