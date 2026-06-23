@@ -9,6 +9,9 @@ import (
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
 	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
+	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
+	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
+	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
 )
 
 var version = "0.0.0-dev"
@@ -23,11 +26,11 @@ func main() {
 	}
 	root.AddCommand(
 		joinCmd(),
+		publishCmd(),
 		statusCmd(),
 		versionCmd(),
 		stub("start", "▶️  run the sync daemon", "M3"),
 		stub("stop", "⏹️  stop the sync daemon", "M3"),
-		stub("publish", "📂 create a share from a local folder", "M2"),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -51,6 +54,7 @@ func joinCmd() *cobra.Command {
 		Short: "🎟️  enroll this device against a hub",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			hubURL, token := args[0], args[1]
 			dir, err := config.Dir()
 			if err != nil {
 				return err
@@ -59,18 +63,76 @@ func joinCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			name, _ := os.Hostname()
+
+			c := transport.New(hubURL)
+			resp, err := c.Join(token, name, id.Pub)
+			if err != nil {
+				return err
+			}
+
 			d, err := config.LoadDaemon(dir)
 			if err != nil {
 				return err
 			}
-			d.Hub = args[0]
+			d.Hub, d.DeviceID, d.Bearer = hubURL, resp.DeviceID, resp.Bearer
 			if err := config.SaveDaemon(dir, d); err != nil {
 				return err
 			}
+
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "device fingerprint: %s\n", id.Fingerprint())
-			fmt.Fprintf(out, "hub:                %s\n", args[0])
-			fmt.Fprintln(out, "✅ identity ready. (hub handshake lands in M2)")
+			fmt.Fprintf(out, "device: %s\n", resp.DeviceID)
+			fmt.Fprintf(out, "hub:    %s\n", hubURL)
+			fmt.Fprintln(out, "✅ joined")
+			return nil
+		},
+	}
+}
+
+func publishCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "publish <localdir> <share>",
+		Short: "📂 create a share from a local folder and push it",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, share := args[0], args[1]
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			if err := c.Publish(share); err != nil {
+				return err
+			}
+			ig, err := syncer.LoadIgnore(root)
+			if err != nil {
+				return err
+			}
+			guard, err := secret.New(nil)
+			if err != nil {
+				return err
+			}
+			res, err := syncer.Push(c, root, share, ig, guard, "")
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "📤 pushed %d files to %q\n", res.Files, share)
+			fmt.Fprintf(out, "🧊 uploaded %d blobs (rest deduped)\n", res.Uploaded)
+			if len(res.Blocked) > 0 {
+				fmt.Fprintf(out, "🔐 %d secret(s) blocked from upload: %v\n", len(res.Blocked), res.Blocked)
+			}
+			fmt.Fprintf(out, "📸 snapshot %s\n", short(res.Snapshot))
 			return nil
 		},
 	}
@@ -113,6 +175,13 @@ func statusCmd() *cobra.Command {
 func orNone(s string) string {
 	if s == "" {
 		return "(none)"
+	}
+	return s
+}
+
+func short(s string) string {
+	if len(s) > 12 {
+		return s[:12]
 	}
 	return s
 }

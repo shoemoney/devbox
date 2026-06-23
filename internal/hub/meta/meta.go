@@ -14,6 +14,7 @@ import (
 
 const schema = `
 PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS devices (
   id        TEXT PRIMARY KEY,
@@ -232,6 +233,20 @@ func (d *DB) AddSnapshot(s Snapshot, chunks []ChunkRef) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	// Snapshots are content-addressed, so re-pushing an unchanged tree (or
+	// reverting to a prior state) replays an existing id. That's idempotent:
+	// advance the head to it, but never re-insert or double-count chunk refs.
+	var one int
+	switch err := tx.QueryRow(`SELECT 1 FROM snapshots WHERE id=?`, s.ID).Scan(&one); {
+	case err == nil:
+		if _, err := tx.Exec(`UPDATE shares SET head_snapshot=? WHERE name=?`, s.ID, s.Share); err != nil {
+			return err
+		}
+		return tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
 
 	if _, err := tx.Exec(
 		`INSERT INTO snapshots (id, share, parent_id, device_id, created_at, manifest_hash)

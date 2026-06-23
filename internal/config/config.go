@@ -40,10 +40,13 @@ type Mount struct {
 	ReadOnly bool   `toml:"readonly,omitempty"`
 }
 
-// Daemon is daemon.toml: which hub this device joined and what it mounts.
+// Daemon is daemon.toml: which hub this device joined (with its bearer token and
+// device id) and what it mounts.
 type Daemon struct {
-	Hub    string  `toml:"hub,omitempty"`
-	Mounts []Mount `toml:"mount"`
+	Hub      string  `toml:"hub,omitempty"`
+	DeviceID string  `toml:"device_id,omitempty"`
+	Bearer   string  `toml:"bearer,omitempty"`
+	Mounts   []Mount `toml:"mount"`
 }
 
 func daemonPath(dir string) string { return filepath.Join(dir, "daemon.toml") }

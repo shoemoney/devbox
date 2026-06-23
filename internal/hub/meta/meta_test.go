@@ -109,4 +109,16 @@ func TestSharesSnapshotsRefcounts(t *testing.T) {
 	if head, _, _ := db.ShareHead("projects"); head != "snap2" {
 		t.Fatalf("head = %q, want snap2", head)
 	}
+
+	// Re-adding an existing snapshot is idempotent: no error, no double-count,
+	// but it advances head (a revert to snap1's content).
+	if err := db.AddSnapshot(s1, []ChunkRef{{"h1", 5}, {"h2", 6}}); err != nil {
+		t.Fatalf("idempotent re-add failed: %v", err)
+	}
+	if rc, _ := db.ChunkRefcount("h1"); rc != 2 {
+		t.Fatalf("h1 refcount = %d after re-add, want 2 (no double-count)", rc)
+	}
+	if head, _, _ := db.ShareHead("projects"); head != "snap1" {
+		t.Fatalf("head = %q after re-add, want snap1 (revert)", head)
+	}
 }
