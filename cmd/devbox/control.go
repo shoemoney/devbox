@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
@@ -58,11 +58,13 @@ func daemonHint(err error) error {
 
 // isTTY reports whether the command's stdout is an interactive terminal. Used to
 // decide whether status may show the human-only "(live)" enrichment — piped
-// output stays byte-identical to v1 so scripts are unaffected.
+// output stays byte-identical to v1 so scripts are unaffected. ponytail: stdlib
+// ModeCharDevice over a go-isatty dep; the fleet is mac/Linux, Cygwin is moot.
 func isTTY(cmd *cobra.Command) bool {
-	f, ok := cmd.OutOrStdout().(interface{ Fd() uintptr })
+	f, ok := cmd.OutOrStdout().(*os.File)
 	if !ok {
 		return false
 	}
-	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
