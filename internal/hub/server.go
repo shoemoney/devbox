@@ -253,13 +253,22 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 	if !decode(w, r, &req) {
 		return
 	}
+	// Write gate (M8a): the device's effective role must be >= editor AND its
+	// access.writable clamp must allow it. In legacy shares (no member grants)
+	// every device is an implicit owner, so this reduces to the v1 writable bit;
+	// an explicit-ACL share is deny-by-default.
 	writable, err := s.db.Writable(deviceID, req.Share)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !writable {
-		writeErr(w, http.StatusForbidden, "device is read-only on this share")
+	role, _, err := s.db.EffectiveRole(deviceID, req.Share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !writable || role < meta.RoleEditor {
+		writeErr(w, http.StatusForbidden, "device not permitted to write to this share")
 		return
 	}
 

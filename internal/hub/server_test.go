@@ -206,6 +206,72 @@ func TestHubHappyPath(t *testing.T) {
 	}
 }
 
+// TestPushWriteGate proves the M8a role gate on the HTTP push path: a legacy
+// share behaves like v1 (the publisher can push), flipping it to explicit ACLs
+// denies an unmembered device (403), a viewer grant is still too low (403), and
+// an editor grant opens the gate (the push then fails LATER for a missing blob,
+// not 403).
+func TestPushWriteGate(t *testing.T) {
+	base, db := testHub(t)
+	now := time.Now().Unix()
+
+	if err := db.CreateToken(HashToken("tok"), now+3600); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{
+		Token: "tok", Name: "laptop", Pubkey: pub,
+		Signature: ed25519.Sign(priv, proto.JoinChallenge("tok", pub)),
+	}))
+	var join proto.JoinResponse
+	if err := json.Unmarshal(body, &join); err != nil {
+		t.Fatal(err)
+	}
+	if status, b := do(t, "POST", base+proto.PathPublish, join.Bearer, mustJSON(t, proto.PublishRequest{Share: "proj"})); status != http.StatusOK {
+		t.Fatalf("publish status = %d, body = %s", status, b)
+	}
+
+	// A push referencing a blob that was never uploaded — so the only thing under
+	// test is the gate: a pass yields 409 (missing blob), a denial yields 403.
+	push := func() int {
+		st, _ := do(t, "POST", base+proto.PathPush, join.Bearer, mustJSON(t, proto.PushRequest{
+			Share:        "proj",
+			ManifestHash: strings.Repeat("a", 64),
+		}))
+		return st
+	}
+
+	// Legacy share: the publisher (principal 'owner') pushes — gate passes (409).
+	if st := push(); st == http.StatusForbidden {
+		t.Fatal("legacy share must allow the owner-device to push (v1 behavior)")
+	}
+	// Flip to explicit by granting a DIFFERENT principal; our device ('owner') is
+	// now unmembered -> deny-by-default.
+	if err := db.SetMember("proj", "stranger", meta.RoleEditor, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := push(); st != http.StatusForbidden {
+		t.Fatalf("explicit share must deny an unmembered device, got %d", st)
+	}
+	// Viewer is below editor -> still denied.
+	if err := db.SetMember("proj", "owner", meta.RoleViewer, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := push(); st != http.StatusForbidden {
+		t.Fatalf("viewer must not be able to push, got %d", st)
+	}
+	// Editor opens the gate -> no longer 403 (now 409 for the missing blob).
+	if err := db.SetMember("proj", "owner", meta.RoleEditor, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := push(); st == http.StatusForbidden {
+		t.Fatal("editor must pass the write gate")
+	}
+}
+
 func TestHubAuthAndHashErrors(t *testing.T) {
 	base, db := testHub(t)
 

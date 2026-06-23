@@ -377,6 +377,88 @@ func userVersion(t *testing.T, db *sql.DB) int {
 	return v
 }
 
+// TestRolesLegacyAndExplicit covers M8a write-side authorization: a fresh share
+// is legacy (every known device is an implicit owner = v1), and the first member
+// grant flips it to explicit/deny-by-default. Device->principal->role resolves.
+func TestRolesLegacyAndExplicit(t *testing.T) {
+	db := open(t)
+	if err := db.AddDevice("devA", "laptop", []byte("k"), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddDevice("devB", "phone", []byte("k"), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateShare("proj", "devA", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Legacy: both devices are implicit owners (v1 behavior preserved).
+	for _, dev := range []string{"devA", "devB"} {
+		role, explicit, err := db.EffectiveRole(dev, "proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit || role != RoleOwner {
+			t.Fatalf("legacy %s: role=%d explicit=%v, want owner/false", dev, role, explicit)
+		}
+	}
+	// An unknown device gets nothing, even in legacy mode.
+	if role, _, _ := db.EffectiveRole("ghost", "proj"); role != 0 {
+		t.Fatalf("unknown device role = %d, want 0", role)
+	}
+
+	// Put devB under its own principal, then grant that principal editor.
+	if err := db.EnsurePrincipal("bob", "bob", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetDevicePrincipal("devB", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	// Grant the default 'owner' principal (devA) admin so devA keeps write after
+	// the flip; grant bob editor.
+	if err := db.SetMember("proj", "owner", RoleOwner, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetMember("proj", "bob", RoleEditor, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now explicit: devA(owner) and devB(editor) both >= editor.
+	for _, tc := range []struct {
+		dev  string
+		want int
+	}{{"devA", RoleOwner}, {"devB", RoleEditor}} {
+		role, explicit, err := db.EffectiveRole(tc.dev, "proj")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !explicit || role != tc.want {
+			t.Fatalf("explicit %s: role=%d explicit=%v, want %d/true", tc.dev, role, explicit, tc.want)
+		}
+	}
+
+	// Demote bob to viewer: below editor -> no write.
+	if err := db.SetMember("proj", "bob", RoleViewer, false); err != nil {
+		t.Fatal(err)
+	}
+	if role, _, _ := db.EffectiveRole("devB", "proj"); role >= RoleEditor {
+		t.Fatalf("demoted devB role = %d, want < editor(%d)", role, RoleEditor)
+	}
+
+	// Remove bob entirely: deny-by-default (role 0) in explicit mode.
+	if err := db.RemoveMember("proj", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if role, explicit, _ := db.EffectiveRole("devB", "proj"); role != 0 || !explicit {
+		t.Fatalf("removed devB role=%d explicit=%v, want 0/true (deny-by-default)", role, explicit)
+	}
+
+	ms, _ := db.Members("proj")
+	if len(ms) != 1 || ms[0].Principal != "owner" {
+		t.Fatalf("members = %+v, want just owner", ms)
+	}
+}
+
 // TestMigrationFromV1WithData is the realistic upgrade path: a populated v1
 // database (user_version 0, global snapshot PK) is migrated in place. Data must
 // survive, a backup must be written, and the v1 idempotent-push legacy — a share

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -37,6 +38,8 @@ func main() {
 		tokenCmd(),
 		readonlyCmd(),
 		revokeCmd(),
+		memberCmd(),
+		principalCmd(),
 		gcCmd(),
 	)
 	if err := root.Execute(); err != nil {
@@ -165,6 +168,134 @@ func revokeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	return cmd
+}
+
+// roleNames maps the CLI role words to their numeric levels (and back).
+var roleNames = map[string]int{"viewer": meta.RoleViewer, "editor": meta.RoleEditor, "admin": meta.RoleAdmin, "owner": meta.RoleOwner}
+
+func roleName(level int) string {
+	for n, l := range roleNames {
+		if l == level {
+			return n
+		}
+	}
+	return fmt.Sprintf("role%d", level)
+}
+
+// memberCmd manages per-share roles (M8a). The FIRST grant on a share flips it
+// from legacy (every device an implicit owner = v1) to explicit/deny-by-default,
+// so granting roles is how a share becomes multi-owner — handle with care.
+func memberCmd() *cobra.Command {
+	var data string
+	cmd := &cobra.Command{Use: "member", Short: "👥 manage per-share roles (M8a)"}
+
+	var reshare bool
+	set := &cobra.Command{
+		Use:   "set <share> <principal> <viewer|editor|admin|owner>",
+		Short: "grant/update a principal's role on a share (flips the share to explicit ACLs)",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			role, ok := roleNames[args[2]]
+			if !ok {
+				return fmt.Errorf("unknown role %q (want viewer|editor|admin|owner)", args[2])
+			}
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			if err := db.SetMember(args[0], args[1], role, reshare); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s is now %s on %s (share now uses explicit ACLs)\n", args[1], args[2], args[0])
+			return nil
+		},
+	}
+	set.Flags().BoolVar(&reshare, "reshare", false, "allow this member to delegate (the +s bit)")
+
+	rm := &cobra.Command{
+		Use:   "rm <share> <principal>",
+		Short: "revoke a principal's role on a share",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			if err := db.RemoveMember(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", args[1], args[0])
+			return nil
+		},
+	}
+
+	list := &cobra.Command{
+		Use:   "list <share>",
+		Short: "list a share's role grants",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			ms, err := db.Members(args[0])
+			if err != nil {
+				return err
+			}
+			if len(ms) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s is a legacy share (every device is an implicit owner)\n", args[0])
+				return nil
+			}
+			for _, m := range ms {
+				s := ""
+				if m.CanReshare {
+					s = " +s"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s%s\n", m.Principal, roleName(m.Role), s)
+			}
+			return nil
+		},
+	}
+
+	for _, c := range []*cobra.Command{set, rm, list} {
+		c.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	}
+	cmd.AddCommand(set, rm, list)
+	return cmd
+}
+
+// principalCmd assigns a device to a principal (M8a). Every v1 device belongs to
+// the synthetic 'owner' principal; point a device at its own principal so per-share
+// roles can distinguish people, not just devices.
+func principalCmd() *cobra.Command {
+	var data, name string
+	cmd := &cobra.Command{
+		Use:   "principal <device> <principal>",
+		Short: "🪪 assign a device to a principal (creates the principal if new)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			pname := cmp.Or(name, args[1])
+			if err := db.EnsurePrincipal(args[1], pname, time.Now().Unix()); err != nil {
+				return err
+			}
+			if err := db.SetDevicePrincipal(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "device %s now belongs to principal %s\n", args[0], args[1])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	cmd.Flags().StringVar(&name, "name", "", "human name for the principal (defaults to its id)")
 	return cmd
 }
 

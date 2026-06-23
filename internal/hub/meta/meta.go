@@ -107,7 +107,42 @@ INSERT OR IGNORE INTO snapshots (share, id, parent_id, device_id, created_at, ma
   WHERE s.head_snapshot IS NOT NULL AND s.head_snapshot != ''
     AND NOT EXISTS (SELECT 1 FROM snapshots o WHERE o.share = s.name AND o.id = s.head_snapshot);
 `,
+	// 2 (v2, M8a): identity + per-share roles. A *principal* (person/account) sits
+	// above the device: the device stays the auth + revocation unit, the principal
+	// is the authorization subject. Every v1 device backfills to ONE synthetic
+	// `owner` principal, so behavior is byte-identical to v1 until a share opts into
+	// explicit ACLs. shares.acl_mode='legacy' (the default) means every device is an
+	// implicit owner (v1); the first member grant flips it to 'explicit' →
+	// deny-by-default. The v1 `access.writable` bit stays a clamp that can only
+	// REMOVE write, never add it. NO inline FK on the ALTER (SQLite requires a NULL
+	// default for that) — integrity is maintained in the app.
+	`
+CREATE TABLE principals (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+INSERT INTO principals (id, name, created_at) VALUES ('owner', 'owner', 0);
+ALTER TABLE devices ADD COLUMN principal_id TEXT NOT NULL DEFAULT 'owner';
+CREATE TABLE members (
+  share        TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  role         INTEGER NOT NULL,
+  can_reshare  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (share, principal_id)
+);
+ALTER TABLE shares ADD COLUMN acl_mode TEXT NOT NULL DEFAULT 'legacy';
+`,
 }
+
+// Role levels on a share (higher = more authority). A device's effective write
+// right is role>=RoleEditor AND its access.writable clamp.
+const (
+	RoleViewer = 10
+	RoleEditor = 20
+	RoleAdmin  = 30
+	RoleOwner  = 40
+)
 
 // DB is the hub metadata store.
 type DB struct{ sql *sql.DB }
@@ -320,6 +355,120 @@ func (d *DB) SetWritable(deviceID, share string, writable bool) error {
 		 ON CONFLICT(device_id, share) DO UPDATE SET writable=excluded.writable`,
 		deviceID, share, w)
 	return err
+}
+
+// --- principals, members & roles (M8a) -----------------------------------
+
+// Member is one principal's role on a share.
+type Member struct {
+	Principal  string
+	Role       int
+	CanReshare bool
+}
+
+// EffectiveRole returns a device's role on a share and whether the share is in
+// explicit-ACL mode. In legacy mode (the v1 default — no member grants yet) every
+// known device is an implicit RoleOwner, so v1 behavior is preserved exactly. In
+// explicit mode the device's principal must hold a member row, else RoleViewer-1
+// (0) = deny-by-default. An unknown/revoked device gets 0 in either mode.
+func (d *DB) EffectiveRole(deviceID, share string) (role int, explicit bool, err error) {
+	var pid string
+	err = d.sql.QueryRow(`SELECT principal_id FROM devices WHERE id=? AND revoked=0`, deviceID).Scan(&pid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	var mode string
+	err = d.sql.QueryRow(`SELECT acl_mode FROM shares WHERE name=?`, share).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		mode = "legacy" // unknown share: stay v1-permissive, push fails later if truly absent
+	} else if err != nil {
+		return 0, false, err
+	}
+	if mode != "explicit" {
+		return RoleOwner, false, nil
+	}
+	err = d.sql.QueryRow(`SELECT role FROM members WHERE share=? AND principal_id=?`, share, pid).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, true, nil // deny-by-default
+	}
+	if err != nil {
+		return 0, true, err
+	}
+	return role, true, nil
+}
+
+// EnsurePrincipal creates a principal if absent (idempotent).
+func (d *DB) EnsurePrincipal(id, name string, createdAt int64) error {
+	_, err := d.sql.Exec(
+		`INSERT INTO principals (id, name, created_at) VALUES (?,?,?)
+		 ON CONFLICT(id) DO NOTHING`, id, name, createdAt)
+	return err
+}
+
+// SetDevicePrincipal points a device at a principal (the principal must exist).
+func (d *DB) SetDevicePrincipal(deviceID, principalID string) error {
+	res, err := d.sql.Exec(`UPDATE devices SET principal_id=? WHERE id=?`, principalID, deviceID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no such device %q", deviceID)
+	}
+	return nil
+}
+
+// SetMember grants (or updates) a principal's role on a share and flips the share
+// into explicit-ACL mode — once a share has any member grant it is deny-by-default.
+func (d *DB) SetMember(share, principalID string, role int, canReshare bool) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	cr := 0
+	if canReshare {
+		cr = 1
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO members (share, principal_id, role, can_reshare) VALUES (?,?,?,?)
+		 ON CONFLICT(share, principal_id) DO UPDATE SET role=excluded.role, can_reshare=excluded.can_reshare`,
+		share, principalID, role, cr); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE shares SET acl_mode='explicit' WHERE name=?`, share); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RemoveMember revokes a principal's grant on a share. The share stays in explicit
+// mode (removing the last member = a locked share, the deliberate deny-all state).
+func (d *DB) RemoveMember(share, principalID string) error {
+	_, err := d.sql.Exec(`DELETE FROM members WHERE share=? AND principal_id=?`, share, principalID)
+	return err
+}
+
+// Members lists a share's grants (empty for a legacy share).
+func (d *DB) Members(share string) ([]Member, error) {
+	rows, err := d.sql.Query(`SELECT principal_id, role, can_reshare FROM members WHERE share=? ORDER BY role DESC, principal_id`, share)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Member
+	for rows.Next() {
+		var m Member
+		var cr int
+		if err := rows.Scan(&m.Principal, &m.Role, &cr); err != nil {
+			return nil, err
+		}
+		m.CanReshare = cr != 0
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // --- snapshots & chunks --------------------------------------------------
