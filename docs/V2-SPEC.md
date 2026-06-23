@@ -135,6 +135,16 @@ because `PRAGMA user_version=1` is the *last* statement (a crash rolls back to 0
 
 The highest-leverage theme — and the **membership layer E2E + P2P both need underneath them.**
 
+> ✅ **Shipped (M8a write-side):** migration #2 adds `principals` + `devices.principal_id` (every v1
+> device backfills to one synthetic `owner` → byte-identical to v1), `members(share, principal_id, role,
+> can_reshare)`, and `shares.acl_mode`. A share with zero grants is **legacy** (every device an implicit
+> owner); the first `devbox-hub member set` flips it to **explicit/deny-by-default**. The push gate now
+> enforces `EffectiveRole ≥ editor AND the writable clamp` (legacy shares reduce to the v1 writable bit
+> exactly). Admin populate path: `devbox-hub member set/rm/list` + `principal`. Verified chaining 0→1→2 on
+> a copy of the real hub DB. **Still ahead in M8a:** the device-facing **invite** flow (bind `(principal,
+> share, role)` via the existing `/v1/join` PoP) + `GET /v1/members` / `POST /v1/members/role` endpoints +
+> `+s` reshare delegation. **Read-side gating stays M9.**
+
 - **Principals.** Insert a *principal* (person/account/service) above the device:
   `devices.principal_id`. The **device stays the auth + revocation unit** (its ed25519 key never
   leaves the box); the **principal becomes the authorization subject**. (Tailscale's identity↔node
@@ -268,7 +278,7 @@ flowchart LR
 
 | Milestone | Ships | Gated by |
 |---|---|---|
-| 🏗️ **M8 — Foundations** 🔨 | ✅ migration runner (`PRAGMA user_version`) · ✅ per-`(share,id)` snapshots + reworked GC (refcount undercount fixed; verified on a copy of the real hub DB) · ✅ daemon **control socket** + real `pause`/`resume` · ⬜ principals/roles/invites + **write** enforcement (M8a) · ⬜ conflict sidecar + `Entry.Binary` + pin + conflict-copy on `restore`/`deploy` (M8-3) · ⬜ `snapshot_chunks` edge table (deferred to M9 — no consumer yet) | — |
+| 🏗️ **M8 — Foundations** 🔨 | ✅ migration runner (`PRAGMA user_version`) · ✅ per-`(share,id)` snapshots + reworked GC (refcount undercount fixed) · ✅ daemon **control socket** + real `pause`/`resume` · ✅ **M8a: principals/roles + write enforcement** (admin CLI; invites/`GET /members` still ahead) · ⬜ conflict sidecar + `Entry.Binary` + pin + conflict-copy on `restore`/`deploy` (M8-3) · ⬜ `snapshot_chunks` edge table (deferred to M9 — no consumer yet) — **both migrations verified on a copy of the real hub DB, chaining 0→1→2** | — |
 | 🔐 **M9 — Trust & durability** | **read-side ACL** (deny-by-default) · **E2E** per-share keyed-convergent encryption · **S3/R2** blob backend + **Litestream** HA | M8 (membership, migration runner, refcounts) |
 | 🤝 **M10 — Cluster & merge** | **LAN peer chunk-exchange** (P2P, hub-authoritative) · **interactive conflict resolver** + **diff3 3-way text merge** | M8 sidecar · M9 convergent-encryption co-design |
 | ✨ **M11 — Polish** | **full TUI** dashboard · **power** sanity (battery/metered/windows) · groups · packfile batching | M8 control socket |
