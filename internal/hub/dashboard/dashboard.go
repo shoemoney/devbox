@@ -103,16 +103,12 @@ type hubInfo struct {
 	UptimeS int64  `json:"uptime_s"`
 }
 type totalsInfo struct {
-	Devices, Online, Shares, Snapshots, Chunks int64
-	Bytes                                      int64
-}
-
-// MarshalJSON keeps the totals keys lowercase to match the frontend contract.
-func (t totalsInfo) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]int64{
-		"devices": t.Devices, "online": t.Online, "shares": t.Shares,
-		"snapshots": t.Snapshots, "chunks": t.Chunks, "bytes": t.Bytes,
-	})
+	Devices   int64 `json:"devices"`
+	Online    int64 `json:"online"`
+	Shares    int64 `json:"shares"`
+	Snapshots int64 `json:"snapshots"`
+	Chunks    int64 `json:"chunks"`
+	Bytes     int64 `json:"bytes"`
 }
 
 type deviceJSON struct {

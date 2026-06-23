@@ -59,7 +59,7 @@
 |---|---|---|
 | 🤔 [Why devbox?](#-why-devbox) | 🧠 [Core Concepts](#-core-concepts) | 🏗️ [Architecture](#%EF%B8%8F-architecture) |
 | 🔄 [How Sync Works](#-how-sync-works) | 💥 [Conflicts](#-conflicts-never-lose-a-byte) | 🚀 [Quick Start](#-quick-start) |
-| 🧰 [CLI Reference](#-cli-reference) | 🪝 [Hooks](#-hooks) | 🙈 [.devignore & Secrets](#-devignore--secret-guard) |
+| 🧰 [CLI Reference](#-cli-reference) | 📊 [Live Dashboard](#-live-dashboard--watch-your-fabric-breathe) | 🪝 [Hooks](#-hooks) | 🙈 [.devignore & Secrets](#-devignore--secret-guard) |
 | 🕰️ [Versioning & Deploy](#%EF%B8%8F-versioning--deploy) | 🖥️ [Cross-Platform](#%EF%B8%8F-cross-platform) | 🔐 [Security & Durability](#-security--durability) |
 | 🗺️ [Roadmap](#%EF%B8%8F-roadmap) | ⚖️ [License & Open-Core](#%EF%B8%8F-license--open-core) | 🙌 [Contributing](#-contributing) |
 
@@ -346,9 +346,51 @@ container automatically. 🪄
 | `devbox-hub token` | 🎟️ Mint / rotate the join token |
 | `devbox-hub device list` / `revoke <id>` | 📋❌ List / revoke devices |
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
+| `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
+| `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
 | `devbox-hub gc` | 🧹 Garbage-collect unreferenced chunks |
 
 </details>
+
+---
+
+## 📊 Live Dashboard — watch your fabric breathe
+
+> Our own. No Grafana, no Prometheus required, **no external deps** — it ships *inside the hub binary*
+> and runs air-gapped. **Off by default**; flip it on and watch every push, join, and chunk flow in real time. ✨
+
+<p align="center"><img src="docs/images/dashboard.png" alt="devbox hub live dashboard" width="860"></p>
+
+```bash
+devbox-hub serve --dashboard                       # loopback http://127.0.0.1:8099 (safe default)
+devbox-hub serve --dashboard --dashboard-addr 0.0.0.0:8099   # expose on the LAN (unauthenticated — warns you)
+```
+
+A mission-control flow visualization rendered on `<canvas>` at 60fps: a **breathing hub core**, your
+**devices orbiting** (bright = active), **shares** on the outer ring — and when a device pushes, a glowing
+**particle streams device → hub → share** and fans out to the subscribers. Plus live **metric tiles** with
+sparklines (devices online, shares, snapshots, chunks, total data, pushes/min, bytes/min) and a streaming,
+color-coded **activity feed**.
+
+| How it works | |
+|---|---|
+| 🖥️ **Served from the hub** | single `go:embed`'d HTML, vanilla JS + canvas, zero CDN/build |
+| 🔌 **`GET /api/state`** | snapshot: hub, totals, devices, shares (UI polls every 10s) |
+| 📡 **`GET /api/events`** | SSE live flow stream (`join`, `push`) — the dashboard animates each one |
+| 🔒 **Loopback by default** | unauthenticated read-only metrics; bind non-loopback only deliberately (it warns) |
+| 🎬 **`?demo=1`** | synthesizes a live stream — instant wow + works offline (`file://`) |
+
+```mermaid
+flowchart LR
+    DEV["💻 device pushes"] -->|"POST /v1/push"| HUB["🛰️ hub"]
+    HUB -->|"Emit(join/push)"| BRK["📡 SSE broker"]
+    BRK -->|"/api/events"| UI["📊 dashboard canvas"]
+    HUB -->|"/api/state"| UI
+    UI -.->|"particle device→hub→share"| UI
+    style HUB fill:#0b2b3a,stroke:#27e8ff,color:#fff
+    style UI fill:#2a0b2b,stroke:#ff3df0,color:#fff
+    style BRK fill:#1e5a2e,stroke:#b6ff3a,color:#fff
+```
 
 ---
 
