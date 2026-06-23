@@ -1,6 +1,6 @@
 // Package proto defines devbox's hub<->device wire types and endpoint paths.
-// Transport is JSON over HTTP (blobs are raw bytes). One TLS endpoint, bearer
-// auth. WebSocket change events arrive in M3.
+// Transport is JSON over HTTP (blobs are raw bytes). One endpoint, bearer auth.
+// Change events stream over SSE (GET /v1/events).
 package proto
 
 // Endpoint paths (all under the hub base URL).
@@ -81,8 +81,8 @@ type PushRequest struct {
 	Chunks       []ChunkRef `json:"chunks"`        // every distinct chunk + size
 }
 
-// PushResponse reports the new snapshot id and head. Conflict handling is M3
-// (Conflict is always false in M2's one-way push).
+// PushResponse reports the new snapshot id and head. Conflict is true when the
+// device pushed against a stale parent: it must pull + reconcile, then retry.
 type PushResponse struct {
 	Snapshot string `json:"snapshot"`
 	Head     string `json:"head"`

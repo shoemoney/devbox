@@ -155,7 +155,7 @@ func publishCmd() *cobra.Command {
 				return err
 			}
 			if res.Conflict {
-				return fmt.Errorf("share %q advanced on the hub (head %s) — pull/merge lands in M3", share, short(res.Head))
+				return fmt.Errorf("share %q already has content on the hub (head %s) — mount it for two-way sync: devbox mount %s <dir>", share, short(res.Head), share)
 			}
 
 			out := cmd.OutOrStdout()
