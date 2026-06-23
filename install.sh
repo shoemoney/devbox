@@ -3,7 +3,7 @@
 # a location you choose, and (optionally) sets up a keep-alive auto-restart service
 # so the sync daemon survives crashes and reboots.
 #
-#   curl -fsSL https://git.shoemoney.ai/shoemoney/devbox/raw/branch/main/install.sh | sh
+#   curl -fsSL https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/latest/install.sh | sh
 #   sh install.sh                       # interactive: pick dir, offer service
 #   sh install.sh --hub --service       # also install the hub + enable the service
 #   DEVBOX_BIN_DIR=~/.local/bin DEVBOX_SERVICE=1 sh install.sh   # non-interactive
@@ -15,7 +15,7 @@ set -eu
 INSTALL_HUB="${DEVBOX_INSTALL_HUB:-0}"
 BIN_DIR="${DEVBOX_BIN_DIR:-}"
 WANT_SERVICE="${DEVBOX_SERVICE:-ask}"
-RELEASE_URL="${DEVBOX_RELEASE_URL:-https://git.shoemoney.ai/shoemoney/devbox/releases/download/latest}"
+RELEASE_URL="${DEVBOX_RELEASE_URL:-https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/latest}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

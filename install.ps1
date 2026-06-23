@@ -6,7 +6,7 @@
   logon and restarts it on failure.
 
 .EXAMPLE
-  irm https://git.shoemoney.ai/shoemoney/devbox/raw/branch/main/install.ps1 | iex
+  irm https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/latest/install.ps1 | iex
   .\install.ps1 -BinDir "$env:LOCALAPPDATA\Programs\devbox" -Service
   .\install.ps1 -Hub                # also install devbox-hub.exe
 #>
@@ -15,7 +15,7 @@ param(
   [switch]$Hub,
   [switch]$Service,
   [switch]$NoService,
-  [string]$ReleaseUrl = $(if ($env:DEVBOX_RELEASE_URL) { $env:DEVBOX_RELEASE_URL } else { "https://git.shoemoney.ai/shoemoney/devbox/releases/download/latest" })
+  [string]$ReleaseUrl = $(if ($env:DEVBOX_RELEASE_URL) { $env:DEVBOX_RELEASE_URL } else { "https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/latest" })
 )
 $ErrorActionPreference = "Stop"
 
