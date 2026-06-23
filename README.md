@@ -314,6 +314,7 @@ container automatically. 🪄
 
 | Command | What it does |
 |---|---|
+| `devbox setup` | 🧭 Step-by-step first-run wizard (also auto-offered once on a fresh machine; opt out with "don't ask again") |
 | `devbox join <hub> <token>` | 🎟️ Enroll this device against a hub |
 | `devbox mount <share> <dir>` | 🔗 Mount a share into a local dir (clone + sync) |
 | `devbox mount <share> <dir> --ro` | 🔒 Mount **read-only** (pull only, never push) |
