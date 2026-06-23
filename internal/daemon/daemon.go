@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
 	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
 	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
@@ -155,9 +156,10 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	}
 	base := d.getBase(m)
 	now := time.Now().UnixNano() // nanoseconds so conflict-copy names don't collide
+	hk := hooks.New(m.Local, m.Share, d.host, m.Hub)
 
 	if m.ReadOnly {
-		pr, err := syncer.Pull(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard)
+		pr, err := syncer.Pull(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard, hk)
 		if err != nil {
 			d.logf("pull %s: %v", m.Share, err)
 			return
@@ -167,7 +169,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		return
 	}
 
-	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard)
+	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard, hk)
 	if err != nil {
 		d.logf("sync %s: %v", m.Share, err)
 		return

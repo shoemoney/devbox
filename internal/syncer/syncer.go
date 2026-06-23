@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
+	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
 	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
@@ -25,6 +26,7 @@ type Result struct {
 	Uploaded int      // blobs actually uploaded (the hub lacked)
 	Files    int      // files in the manifest
 	Conflict bool     // hub rejected the push: device is behind head (pull + reconcile)
+	Vetoed   bool     // a pre-push hook aborted the push
 }
 
 // Push builds a manifest of root (filtered by ig + guard), uploads any blobs the
@@ -33,10 +35,18 @@ type Result struct {
 // subtree is spliced into the share head (entries outside subpath are preserved)
 // so a partial mount can push without dropping the rest of the share.
 // parent is the device's last-known head ("" if none).
-func Push(c *transport.Client, root, share, subpath string, ig *ignore.Matcher, guard *secret.Guard, parent string) (Result, error) {
+func Push(c *transport.Client, root, share, subpath string, ig *ignore.Matcher, guard *secret.Guard, parent string, hk *hooks.Runner) (Result, error) {
 	localM, blocked, err := manifest.Build(root, ig, guard)
 	if err != nil {
 		return Result{}, err
+	}
+
+	paths := make([]string, len(localM.Entries))
+	for i, e := range localM.Entries {
+		paths[i] = e.Path
+	}
+	if err := hk.Run(hooks.PrePush, paths, parent); err != nil {
+		return Result{Vetoed: true}, nil // pre-push hook vetoed; skip this push
 	}
 
 	// Gather the bytes of every distinct local chunk (with sizes).
@@ -110,6 +120,9 @@ func Push(c *transport.Client, root, share, subpath string, ig *ignore.Matcher, 
 	})
 	if err != nil {
 		return Result{}, err
+	}
+	if !resp.Conflict {
+		_ = hk.Run(hooks.PostPush, paths, resp.Snapshot) // best-effort; never aborts
 	}
 	return Result{
 		Snapshot: resp.Snapshot,

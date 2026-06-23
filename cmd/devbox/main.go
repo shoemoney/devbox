@@ -133,7 +133,7 @@ func publishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := syncer.Push(c, root, share, "", ig, guard, head)
+			res, err := syncer.Push(c, root, share, "", ig, guard, head, nil)
 			if err != nil {
 				return err
 			}
@@ -204,10 +204,10 @@ func mountCmd() *cobra.Command {
 			var pr syncer.PullResult
 			var newBase string
 			if ro {
-				pr, err = syncer.Pull(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard)
+				pr, err = syncer.Pull(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard, nil)
 				newBase = pr.Base
 			} else {
-				newBase, pr, err = syncer.Sync(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard)
+				newBase, pr, err = syncer.Sync(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard, nil)
 			}
 			if err != nil {
 				return err

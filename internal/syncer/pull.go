@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
 	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
@@ -19,6 +20,7 @@ type PullResult struct {
 	Deleted   []string // files deleted to match the hub
 	Conflicts []string // conflict copies created (local edits preserved beside canonical)
 	Skipped   []string // paths a filesystem error skipped (e.g. file<->dir clash)
+	Vetoed    bool     // a pre-pull hook aborted applying inbound changes
 }
 
 // Pull fetches the hub head manifest for share, three-way merges it against the
@@ -30,7 +32,7 @@ type PullResult struct {
 //   - delete-vs-edit never loses the edit (the edit always survives).
 //
 // Never destroys a byte: every losing local edit becomes a conflict copy.
-func Pull(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (PullResult, error) {
+func Pull(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard, hk *hooks.Runner) (PullResult, error) {
 	head, err := c.Head(share)
 	if err != nil {
 		return PullResult{}, err
@@ -56,6 +58,13 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 	ours, _, err := manifest.Build(root, ig, guard)
 	if err != nil {
 		return PullResult{}, err
+	}
+
+	// pre-pull may veto (e.g. stop a running container before files change).
+	incoming := manifest.Diff(baseM, theirs)
+	pending := append(append(append([]string{}, incoming.Added...), incoming.Modified...), incoming.Deleted...)
+	if err := hk.Run(hooks.PrePull, pending, head); err != nil {
+		return PullResult{Base: base, Vetoed: true}, nil
 	}
 
 	bi, oi, ti := indexEntries(baseM), indexEntries(ours), indexEntries(theirs)
@@ -125,6 +134,11 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 		}
 	}
 
+	if len(res.Conflicts) > 0 {
+		_ = hk.Run(hooks.OnConflict, res.Conflicts, head)
+	}
+	_ = hk.Run(hooks.PostPull, append(append([]string{}, res.Written...), res.Deleted...), head)
+
 	res.Base = head
 	return res, nil
 }
@@ -132,16 +146,22 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 // Sync brings a mount into agreement with the hub: pull+merge to head, then push
 // the merged local state; retries if the hub advanced underneath. Returns the new
 // base snapshot and the pull result.
-func Sync(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (string, PullResult, error) {
+func Sync(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard, hk *hooks.Runner) (string, PullResult, error) {
 	for attempt := 0; attempt < 5; attempt++ {
-		pr, err := Pull(c, root, share, subpath, base, host, now, ig, guard)
+		pr, err := Pull(c, root, share, subpath, base, host, now, ig, guard, hk)
 		if err != nil {
 			return base, pr, err
 		}
+		if pr.Vetoed {
+			return base, pr, nil // pre-pull vetoed; wait for the next nudge
+		}
 		base = pr.Base
-		push, err := Push(c, root, share, subpath, ig, guard, base)
+		push, err := Push(c, root, share, subpath, ig, guard, base, hk)
 		if err != nil {
 			return base, pr, err
+		}
+		if push.Vetoed {
+			return base, pr, nil // pre-push vetoed
 		}
 		if push.Conflict {
 			base = push.Head // hub advanced; re-pull against the new head
