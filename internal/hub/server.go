@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,13 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// hashBearer hashes a bearer the same way, so the hub stores only the hash (no
+// plaintext credentials at rest) and lookup compares fixed-width hashes.
+func hashBearer(bearer string) string {
+	sum := sha256.Sum256([]byte(bearer))
+	return hex.EncodeToString(sum[:])
+}
+
 // Handler returns the hub's HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -46,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathPublish, s.auth(s.handlePublish))
 	mux.HandleFunc("POST "+proto.PathHave, s.auth(s.handleHave))
 	mux.HandleFunc("PUT "+proto.PathBlob+"{hash}", s.auth(s.handleBlob))
+	mux.HandleFunc("GET "+proto.PathBlob+"{hash}", s.auth(s.handleGetBlob))
 	mux.HandleFunc("POST "+proto.PathPush, s.auth(s.handlePush))
 	mux.HandleFunc("GET "+proto.PathHead, s.auth(s.handleHead))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
@@ -63,7 +72,7 @@ func (s *Server) auth(next func(http.ResponseWriter, *http.Request, string)) htt
 			writeErr(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		deviceID, ok, err := s.db.DeviceByBearer(h[len(prefix):])
+		deviceID, ok, err := s.db.DeviceByBearer(hashBearer(h[len(prefix):]))
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -102,7 +111,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.db.IssueBearer(deviceID, bearer); err != nil {
+	if err := s.db.IssueBearer(deviceID, hashBearer(bearer)); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -140,6 +149,21 @@ func (s *Server) handleHave(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, proto.HaveResponse{Missing: missing})
 }
 
+// handleGetBlob serves a blob's bytes for download (pull fetches manifests + chunks).
+func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string) {
+	b, err := s.store.Get(r.PathValue("hash"))
+	if errors.Is(err, blobstore.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "no such blob")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(b)
+}
+
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request, _ string) {
 	hash := r.PathValue("hash")
 	body, err := io.ReadAll(r.Body)
@@ -170,6 +194,20 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 	}
 	if !writable {
 		writeErr(w, http.StatusForbidden, "device is read-only on this share")
+		return
+	}
+
+	// Conflict detection: a push must extend the current head (or replay it).
+	// Re-pushing the existing head is idempotent; a push whose parent IS the
+	// current head fast-forwards; anything else means the device is behind and
+	// must pull + reconcile (M3) before pushing again — we never clobber head.
+	head, _, err := s.db.ShareHead(req.Share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if req.ManifestHash != head && req.Parent != head {
+		writeJSON(w, http.StatusOK, proto.PushResponse{Head: head, Conflict: true})
 		return
 	}
 

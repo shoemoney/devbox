@@ -87,7 +87,10 @@ func tokenCmd() *cobra.Command {
 				return err
 			}
 			defer db.Close()
-			raw := randHex(16)
+			raw, err := randHex(16)
+			if err != nil {
+				return err
+			}
 			if err := db.CreateToken(hub.HashToken(raw), time.Now().Add(ttl).Unix()); err != nil {
 				return err
 			}
@@ -152,8 +155,10 @@ func revokeCmd() *cobra.Command {
 	return cmd
 }
 
-func randHex(n int) string {
+func randHex(n int) (string, error) {
 	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

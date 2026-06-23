@@ -121,9 +121,16 @@ func publishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := syncer.Push(c, root, share, ig, guard, "")
+			head, err := c.Head(share)
 			if err != nil {
 				return err
+			}
+			res, err := syncer.Push(c, root, share, ig, guard, head)
+			if err != nil {
+				return err
+			}
+			if res.Conflict {
+				return fmt.Errorf("share %q advanced on the hub (head %s) — pull/merge lands in M3", share, short(res.Head))
 			}
 
 			out := cmd.OutOrStdout()

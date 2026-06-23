@@ -73,6 +73,28 @@ func (c *Client) PutBlob(hash string, data []byte) error {
 	return c.raw(http.MethodPut, proto.PathBlob+hash, data)
 }
 
+// GetBlob downloads one blob's raw bytes by content hash (used by pull).
+func (c *Client) GetBlob(hash string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.base+proto.PathBlob+hash, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, apiError(resp.StatusCode, body)
+	}
+	return body, nil
+}
+
 // Push commits a snapshot. Its manifest and chunk blobs must already be uploaded.
 func (c *Client) Push(req proto.PushRequest) (proto.PushResponse, error) {
 	var resp proto.PushResponse

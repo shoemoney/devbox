@@ -23,6 +23,7 @@ type Result struct {
 	Blocked  []string // secret files refused upload
 	Uploaded int      // blobs actually uploaded (the hub lacked)
 	Files    int      // files in the manifest
+	Conflict bool     // hub rejected the push: device is behind head (pull + reconcile)
 }
 
 // Push builds a manifest of root (filtered by ig + guard), uploads any blobs the
@@ -94,6 +95,7 @@ func Push(c *transport.Client, root, share string, ig *ignore.Matcher, guard *se
 		Blocked:  blocked,
 		Uploaded: len(missing),
 		Files:    len(m.Entries),
+		Conflict: resp.Conflict,
 	}, nil
 }
 
