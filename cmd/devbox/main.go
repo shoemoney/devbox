@@ -280,7 +280,7 @@ func logCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			for _, s := range snaps {
 				ts := time.Unix(s.CreatedAt, 0).Format("2006-01-02 15:04:05")
-				fmt.Fprintf(out, "%s  %s  %s\n", short(s.ID), ts, s.Device)
+				fmt.Fprintf(out, "%s  %s  %s\n", s.ID, ts, s.Device) // full id so it round-trips to restore
 			}
 			return nil
 		},
