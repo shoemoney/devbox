@@ -4,9 +4,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -15,10 +19,13 @@ import (
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
 	"git.shoemoney.ai/shoemoney/devbox/internal/daemon"
+	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
 	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
 	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
 	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"git.shoemoney.ai/shoemoney/devbox/internal/watch"
+	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
 var version = "0.0.0-dev"
@@ -38,10 +45,12 @@ func main() {
 		logCmd(),
 		restoreCmd(),
 		deployCmd(),
+		hookCmd(),
 		startCmd(),
+		stopCmd(),
 		statusCmd(),
+		doctorCmd(),
 		versionCmd(),
-		stub("stop", "⏹️  stop the sync daemon", "M7"),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -465,6 +474,13 @@ func startCmd() *cobra.Command {
 			if len(cfg.Mounts) == 0 {
 				return fmt.Errorf("no mounts — run: devbox mount <share> <dir>")
 			}
+			if pid, ok := runningPid(dir); ok {
+				return fmt.Errorf("daemon already running (pid %d) — run: devbox stop", pid)
+			}
+			if err := writePid(dir); err != nil {
+				return err
+			}
+			defer removePid(dir)
 			host, _ := os.Hostname()
 			dmn, err := daemon.New(dir, cfg, host, nil)
 			if err != nil {
@@ -529,12 +545,296 @@ func short(s string) string {
 	return s
 }
 
-func stub(use, short, milestone string) *cobra.Command {
+func stopCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("%q is not implemented yet (arrives in %s)", use, milestone)
+		Use:   "stop",
+		Short: "⏹️  stop the running sync daemon",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			pid, ok := runningPid(dir)
+			if !ok {
+				removePid(dir) // clean up a stale pidfile if present
+				return fmt.Errorf("no running daemon")
+			}
+			p, err := os.FindProcess(pid)
+			if err != nil {
+				return err
+			}
+			if err := p.Signal(syscall.SIGTERM); err != nil {
+				return fmt.Errorf("signaling daemon (pid %d): %w", pid, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "⏹️  sent stop to daemon (pid %d)\n", pid)
+			return nil
 		},
 	}
+}
+
+// --- pidfile: lets `devbox stop` find a running `devbox start` ---
+
+func pidPath(dir string) string { return filepath.Join(dir, "daemon.pid") }
+
+func writePid(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(pidPath(dir), []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+func removePid(dir string) { _ = os.Remove(pidPath(dir)) }
+
+// runningPid reports the pid in the pidfile, and whether that process is alive.
+// A stale pidfile (process gone) returns ok=false.
+func runningPid(dir string) (int, bool) {
+	b, err := os.ReadFile(pidPath(dir))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return 0, false
+	}
+	// On unix signal 0 tests liveness without delivering a signal.
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return 0, false
+	}
+	return pid, true
+}
+
+func doctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "🩺 diagnose this device's devbox setup (config, hub, mounts, watcher)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			var failed bool
+			check := func(ok bool, warn bool, name, detail string) {
+				glyph := "✅"
+				if !ok {
+					if warn {
+						glyph = "⚠️ "
+					} else {
+						glyph = "❌"
+						failed = true
+					}
+				}
+				if detail != "" {
+					fmt.Fprintf(out, "%s %s — %s\n", glyph, name, detail)
+				} else {
+					fmt.Fprintf(out, "%s %s\n", glyph, name)
+				}
+			}
+
+			fmt.Fprintf(out, "devbox %s · %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
+			fmt.Fprintf(out, "config: %s\n\n", dir)
+
+			// Identity + join state.
+			if _, err := identity.Load(dir); err != nil {
+				check(false, false, "identity", "not joined — run: devbox join <hub> <token>")
+				return fmt.Errorf("device is not joined")
+			}
+			check(true, false, "identity", "device keypair present")
+
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				check(false, false, "config", err.Error())
+				return err
+			}
+			check(d.Hub != "", false, "hub configured", d.Hub)
+			check(d.Bearer != "", false, "bearer token", "present")
+
+			// Hub reachability (unauth) + bearer validity (authed).
+			if d.Hub != "" {
+				hc := &http.Client{Timeout: 5 * time.Second}
+				resp, err := hc.Get(strings.TrimRight(d.Hub, "/") + proto.PathMetrics)
+				if err != nil {
+					check(false, false, "hub reachable", err.Error())
+				} else {
+					resp.Body.Close()
+					check(true, false, "hub reachable", d.Hub+proto.PathMetrics)
+					c := transport.New(d.Hub)
+					c.SetBearer(d.Bearer)
+					if _, err := c.Have(nil); err != nil {
+						check(false, false, "bearer accepted", err.Error())
+					} else {
+						check(true, false, "bearer accepted", "hub authorized this device")
+					}
+				}
+			}
+
+			// bash — required for lifecycle hooks.
+			if _, err := exec.LookPath("bash"); err != nil {
+				check(false, true, "bash", "not found — lifecycle hooks won't run")
+			} else {
+				check(true, false, "bash", "available for hooks")
+			}
+
+			// fsnotify watcher (catches inotify exhaustion on Linux).
+			probe := filepath.Join(os.TempDir(), "devbox-doctor-watch")
+			_ = os.MkdirAll(probe, 0o755)
+			if w, err := watch.New(probe, 100*time.Millisecond); err != nil {
+				check(false, false, "file watcher", err.Error())
+			} else {
+				w.Close()
+				check(true, false, "file watcher", "fsnotify ok")
+			}
+			_ = os.RemoveAll(probe)
+
+			// Mounts: dir exists + writable.
+			check(len(d.Mounts) > 0, len(d.Mounts) == 0, "mounts", fmt.Sprintf("%d configured", len(d.Mounts)))
+			for _, m := range d.Mounts {
+				label := fmt.Sprintf("mount %s -> %s", m.Share, m.Local)
+				if writable(m.Local) {
+					mode := "rw"
+					if m.ReadOnly {
+						mode = "ro"
+					}
+					if m.Pinned {
+						mode += ",pinned"
+					}
+					check(true, false, label, mode)
+				} else {
+					check(false, false, label, "local dir missing or not writable")
+				}
+			}
+
+			fmt.Fprintln(out)
+			if failed {
+				return fmt.Errorf("doctor found problems (see ❌ above)")
+			}
+			fmt.Fprintln(out, "🎉 all checks passed")
+			return nil
+		},
+	}
+}
+
+// writable reports whether dir exists and we can create a file in it.
+func writable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".devbox-doctor-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func hookCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "hook",
+		Short: "🪝 manage a mount's lifecycle hooks",
+	}
+	cmd.AddCommand(hookEditCmd(), hookListCmd())
+	return cmd
+}
+
+func hookEditCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit <share> <event>",
+		Short: "✏️  create/edit a hook script (events: " + strings.Join(hooks.AllEvents(), ", ") + ")",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share, event := args[0], args[1]
+			if !hooks.IsEvent(event) {
+				return fmt.Errorf("unknown event %q (events: %s)", event, strings.Join(hooks.AllEvents(), ", "))
+			}
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			m, ok := findMount(d.Mounts, share)
+			if !ok {
+				return fmt.Errorf("no mount for share %q — mount it first", share)
+			}
+			hookDir := hooks.Dir(m.Local)
+			if err := os.MkdirAll(hookDir, 0o755); err != nil {
+				return err
+			}
+			path := filepath.Join(hookDir, event)
+			out := cmd.OutOrStdout()
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if err := os.WriteFile(path, []byte(hooks.Sample(event)), 0o755); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "🆕 created %s\n", path)
+			}
+			_ = os.Chmod(path, 0o755) // ensure executable so the runner picks it up
+
+			editor := firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
+			if editor == "" {
+				fmt.Fprintf(out, "✏️  edit it: %s (set $EDITOR to open automatically)\n", path)
+				return nil
+			}
+			ed := exec.Command(editor, path)
+			ed.Stdin, ed.Stdout, ed.Stderr = os.Stdin, os.Stdout, os.Stderr
+			return ed.Run()
+		},
+	}
+}
+
+func hookListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list <share>",
+		Short: "📋 list installed + available hooks for a share's mount",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share := args[0]
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			m, ok := findMount(d.Mounts, share)
+			if !ok {
+				return fmt.Errorf("no mount for share %q", share)
+			}
+			out := cmd.OutOrStdout()
+			hookDir := hooks.Dir(m.Local)
+			fmt.Fprintf(out, "hooks dir: %s\n", hookDir)
+			for _, e := range hooks.AllEvents() {
+				glyph := "·"
+				if isExecutable(filepath.Join(hookDir, e)) || isExecutable(filepath.Join(hookDir, e+".ps1")) {
+					glyph = "✅"
+				}
+				fmt.Fprintf(out, "  %s %s\n", glyph, e)
+			}
+			return nil
+		},
+	}
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

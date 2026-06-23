@@ -27,7 +27,7 @@ func TestNextBackoffDoublesAndCaps(t *testing.T) {
 func TestJitteredStaysWithinBand(t *testing.T) {
 	const d = 8 * time.Second
 	lo, hi := d-d/4, d+d/4 // ±25%
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		j := jittered(d)
 		if j < lo || j >= hi {
 			t.Fatalf("jittered(%s) = %s, want in [%s,%s)", d, j, lo, hi)

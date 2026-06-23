@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -26,6 +27,37 @@ const (
 	PostPull   = "post-pull"
 	OnConflict = "on-conflict"
 )
+
+// AllEvents lists the supported hook events (also the script filenames), in
+// lifecycle order. pre-* events can veto their step by exiting non-zero.
+func AllEvents() []string {
+	return []string{PrePush, PostPush, PrePull, PostPull, OnConflict}
+}
+
+// IsEvent reports whether name is a supported hook event.
+func IsEvent(name string) bool { return slices.Contains(AllEvents(), name) }
+
+// Dir returns a mount's hooks directory: root/.devbox/hooks.
+func Dir(root string) string { return filepath.Join(root, ".devbox", "hooks") }
+
+// Sample returns a commented, ready-to-edit bash template for an event hook,
+// documenting the env vars devbox injects.
+func Sample(event string) string {
+	return "#!/usr/bin/env bash\n" +
+		"# devbox " + event + " hook — runs on every " + event + ".\n" +
+		"# Injected environment:\n" +
+		"#   DEVBOX_EVENT          the event name (" + event + ")\n" +
+		"#   DEVBOX_MOUNT          this mount's local root\n" +
+		"#   DEVBOX_SHARE          the share name\n" +
+		"#   DEVBOX_HOST           this device's hostname\n" +
+		"#   DEVBOX_REMOTE         the hub URL\n" +
+		"#   DEVBOX_SNAPSHOT       the snapshot id involved\n" +
+		"#   DEVBOX_CHANGED_FILES  path to a newline-delimited list of changed files\n" +
+		"#\n" +
+		"# A non-zero exit from a pre-* hook VETOES that sync step.\n" +
+		"set -euo pipefail\n\n" +
+		"echo \"devbox " + event + ": $DEVBOX_SHARE @ $DEVBOX_SNAPSHOT\"\n"
+}
 
 // Runner runs hooks for one mount.
 type Runner struct {
@@ -104,7 +136,7 @@ func (r *Runner) Run(event string, changed []string, snapshot string) error {
 // find locates the hook script + interpreter: an executable <event>.ps1 (pwsh)
 // or an executable <event> (bash).
 func (r *Runner) find(event string) (script, interp string, ok bool) {
-	dir := filepath.Join(r.Root, ".devbox", "hooks")
+	dir := Dir(r.Root)
 	if ps := filepath.Join(dir, event+".ps1"); executable(ps) {
 		return ps, "pwsh", true
 	}
