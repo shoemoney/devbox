@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M2-yellow?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M3-yellow?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -39,8 +39,9 @@
 > |---|---|
 > | M0 — Skeleton (CLI, identity, config) | ✅ done |
 > | M1 — Watch · `.devignore` · secret-guard · chunking · manifest | ✅ done |
-> | M2 — Hub + push | 🔨 building |
-> | M3+ | ⬜ design complete, not started |
+> | M2 — Hub + one-way push (deployed + verified cross-machine 🛰️) | ✅ done |
+> | M3 — Two-way sync (WebSocket fan-out, pull, conflicts) | 🔨 building |
+> | M4+ | ⬜ design complete, not started |
 
 ---
 
@@ -458,15 +459,16 @@ flowchart LR
     M65 --> M7["M7 🛡️\nHardening"]
     style M0 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M1 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M2 fill:#4F9CF9,color:#fff
+    style M2 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M3 fill:#4F9CF9,color:#fff
 ```
 
 | | Milestone | Deliverable |
 |:---:|---|---|
 | ✅ | **M0 — Skeleton** 🦴 | cobra CLI, `devbox join`, keypair, machine config |
 | ✅ | **M1 — Watch + secrets** 👀 | fsnotify, `.devignore`, secret-guard, FastCDC+BLAKE3 chunking, content-addressed manifests |
-| 🔨 | **M2 — Hub + push** 🛰️ | shares, token, CAS, `publish`, HTTP upload, snapshots, `/metrics` |
-| ⬜ | **M3 — Two-way sync** 🔄 | WS events + HTTP blobs, mount/pull, atomic apply, conflict copies |
+| ✅ | **M2 — Hub + push** 🛰️ | shares, join tokens, CAS, `publish`, HTTP upload, snapshots, bearer auth, `/metrics` — deployed on `.10`, verified cross-machine |
+| 🔨 | **M3 — Two-way sync** 🔄 | WS events + HTTP blobs, mount/pull, atomic apply, conflict copies |
 | ⬜ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
 | ⬜ | **M5 — Hooks** 🪝 | bash/`.ps1` runner, templates, env, timeout |
 | ⬜ | **M6 — Versioning** 🕰️ | `log` / `restore`, hub GC |
