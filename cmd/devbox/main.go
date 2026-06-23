@@ -51,6 +51,7 @@ func main() {
 		hookCmd(),
 		ignoreCmd(),
 		conflictsCmd(),
+		membersCmd(),
 		startCmd(),
 		stopCmd(),
 		pauseCmd(),
@@ -298,6 +299,46 @@ func logCmd() *cobra.Command {
 			for _, s := range snaps {
 				ts := time.Unix(s.CreatedAt, 0).Format("2006-01-02 15:04:05")
 				fmt.Fprintf(out, "%s  %s  %s\n", s.ID, ts, s.Device) // full id so it round-trips to restore
+			}
+			return nil
+		},
+	}
+}
+
+func membersCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "members <share>",
+		Short: "👥 show who can access a share (M8a roles)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			resp, err := c.Members(args[0])
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if resp.Legacy {
+				fmt.Fprintf(out, "%s is a legacy share — every enrolled device is an implicit owner\n", args[0])
+				return nil
+			}
+			for _, m := range resp.Members {
+				s := ""
+				if m.CanReshare {
+					s = " +s"
+				}
+				fmt.Fprintf(out, "%-20s %s%s\n", m.Principal, m.Role, s)
 			}
 			return nil
 		},

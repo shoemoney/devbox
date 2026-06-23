@@ -144,6 +144,22 @@ const (
 	RoleOwner  = 40
 )
 
+// roleNames is the canonical name<->level mapping shared by the CLI and wire.
+var roleNames = map[string]int{"viewer": RoleViewer, "editor": RoleEditor, "admin": RoleAdmin, "owner": RoleOwner}
+
+// ParseRole maps a role word to its level (ok=false if unknown).
+func ParseRole(name string) (int, bool) { lvl, ok := roleNames[name]; return lvl, ok }
+
+// RoleName maps a level back to its word (or "roleN" for an unknown level).
+func RoleName(level int) string {
+	for n, l := range roleNames {
+		if l == level {
+			return n
+		}
+	}
+	return fmt.Sprintf("role%d", level)
+}
+
 // DB is the hub metadata store.
 type DB struct{ sql *sql.DB }
 
@@ -449,6 +465,20 @@ func (d *DB) SetMember(share, principalID string, role int, canReshare bool) err
 func (d *DB) RemoveMember(share, principalID string) error {
 	_, err := d.sql.Exec(`DELETE FROM members WHERE share=? AND principal_id=?`, share, principalID)
 	return err
+}
+
+// ACLMode returns a share's ACL mode ("legacy" or "explicit"); "legacy" if the
+// share is unknown, so callers stay v1-permissive.
+func (d *DB) ACLMode(share string) (string, error) {
+	var mode string
+	err := d.sql.QueryRow(`SELECT acl_mode FROM shares WHERE name=?`, share).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "legacy", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return mode, nil
 }
 
 // Members lists a share's grants (empty for a legacy share).

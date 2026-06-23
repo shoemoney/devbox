@@ -175,6 +175,14 @@ func (c *Client) Log(share string) ([]proto.SnapshotInfo, error) {
 	return resp.Snapshots, nil
 }
 
+// Members returns who can access a share (M8a).
+func (c *Client) Members(share string) (proto.MembersResponse, error) {
+	var resp proto.MembersResponse
+	path := proto.PathMembers + "?" + url.Values{"share": {share}}.Encode()
+	err := c.do(http.MethodGet, path, true, nil, &resp)
+	return resp, err
+}
+
 // do sends a JSON request (nil body for GET) and decodes a JSON response into
 // out (nil out discards the body). It sets the bearer header when auth is true.
 func (c *Client) do(method, path string, auth bool, body, out any) error {

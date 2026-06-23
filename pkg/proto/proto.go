@@ -13,6 +13,7 @@ const (
 	PathHead    = "/v1/head"    // GET ?share=, auth: current head snapshot id
 	PathLog     = "/v1/log"     // GET ?share=, auth: snapshot history
 	PathEvents  = "/v1/events"  // GET ?share=, auth: SSE stream of change events
+	PathMembers = "/v1/members" // GET ?share=, auth: who can access a share (M8a)
 	PathMetrics = "/metrics"    // GET, no auth: Prometheus text exposition
 )
 
@@ -27,6 +28,20 @@ type SnapshotInfo struct {
 // LogResponse is a share's snapshot history, newest first.
 type LogResponse struct {
 	Snapshots []SnapshotInfo `json:"snapshots"`
+}
+
+// Member is one principal's role grant on a share (M8a).
+type Member struct {
+	Principal  string `json:"principal"`
+	Role       string `json:"role"` // viewer|editor|admin|owner
+	CanReshare bool   `json:"can_reshare,omitempty"`
+}
+
+// MembersResponse lists a share's role grants. Empty Members + Legacy=true means
+// a legacy share where every enrolled device is an implicit owner (v1 behavior).
+type MembersResponse struct {
+	Legacy  bool     `json:"legacy"`
+	Members []Member `json:"members"`
 }
 
 // Event is a hub change notification, delivered as one SSE "data:" line (JSON).

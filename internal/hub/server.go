@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathPush, s.auth(s.handlePush))
 	mux.HandleFunc("GET "+proto.PathHead, s.auth(s.handleHead))
 	mux.HandleFunc("GET "+proto.PathLog, s.auth(s.handleLog))
+	mux.HandleFunc("GET "+proto.PathMembers, s.auth(s.handleMembers))
 	mux.HandleFunc("GET "+proto.PathEvents, s.auth(s.handleEvents))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
 	return mux
@@ -354,6 +355,27 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request, _ string) {
 		out[i] = proto.SnapshotInfo{ID: s.ID, Parent: s.Parent, Device: s.Device, CreatedAt: s.CreatedAt}
 	}
 	writeJSON(w, http.StatusOK, proto.LogResponse{Snapshots: out})
+}
+
+// handleMembers lists who can access a share (M8a). Reads stay open to any
+// enrolled device in M8a — read-side gating is M9.
+func (s *Server) handleMembers(w http.ResponseWriter, r *http.Request, _ string) {
+	share := r.URL.Query().Get("share")
+	mode, err := s.db.ACLMode(share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ms, err := s.db.Members(share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]proto.Member, len(ms))
+	for i, m := range ms {
+		out[i] = proto.Member{Principal: m.Principal, Role: meta.RoleName(m.Role), CanReshare: m.CanReshare}
+	}
+	writeJSON(w, http.StatusOK, proto.MembersResponse{Legacy: mode != "explicit", Members: out})
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {

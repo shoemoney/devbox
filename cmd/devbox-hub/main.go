@@ -171,18 +171,6 @@ func revokeCmd() *cobra.Command {
 	return cmd
 }
 
-// roleNames maps the CLI role words to their numeric levels (and back).
-var roleNames = map[string]int{"viewer": meta.RoleViewer, "editor": meta.RoleEditor, "admin": meta.RoleAdmin, "owner": meta.RoleOwner}
-
-func roleName(level int) string {
-	for n, l := range roleNames {
-		if l == level {
-			return n
-		}
-	}
-	return fmt.Sprintf("role%d", level)
-}
-
 // memberCmd manages per-share roles (M8a). The FIRST grant on a share flips it
 // from legacy (every device an implicit owner = v1) to explicit/deny-by-default,
 // so granting roles is how a share becomes multi-owner — handle with care.
@@ -196,7 +184,7 @@ func memberCmd() *cobra.Command {
 		Short: "grant/update a principal's role on a share (flips the share to explicit ACLs)",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			role, ok := roleNames[args[2]]
+			role, ok := meta.ParseRole(args[2])
 			if !ok {
 				return fmt.Errorf("unknown role %q (want viewer|editor|admin|owner)", args[2])
 			}
@@ -255,7 +243,7 @@ func memberCmd() *cobra.Command {
 				if m.CanReshare {
 					s = " +s"
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s%s\n", m.Principal, roleName(m.Role), s)
+				fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s%s\n", m.Principal, meta.RoleName(m.Role), s)
 			}
 			return nil
 		},

@@ -272,6 +272,57 @@ func TestPushWriteGate(t *testing.T) {
 	}
 }
 
+// TestHandleMembers covers GET /v1/members: a fresh share reads as legacy, and
+// after a grant it lists the member with the role name and reshare bit.
+func TestHandleMembers(t *testing.T) {
+	base, db := testHub(t)
+	now := time.Now().Unix()
+	if err := db.CreateToken(HashToken("tok"), now+3600); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{
+		Token: "tok", Name: "laptop", Pubkey: pub,
+		Signature: ed25519.Sign(priv, proto.JoinChallenge("tok", pub)),
+	}))
+	var join proto.JoinResponse
+	if err := json.Unmarshal(body, &join); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := do(t, "POST", base+proto.PathPublish, join.Bearer, mustJSON(t, proto.PublishRequest{Share: "proj"})); st != http.StatusOK {
+		t.Fatalf("publish = %d", st)
+	}
+
+	get := func() proto.MembersResponse {
+		st, b := do(t, "GET", base+proto.PathMembers+"?share=proj", join.Bearer, nil)
+		if st != http.StatusOK {
+			t.Fatalf("members status = %d, body = %s", st, b)
+		}
+		var resp proto.MembersResponse
+		if err := json.Unmarshal(b, &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if resp := get(); !resp.Legacy || len(resp.Members) != 0 {
+		t.Fatalf("fresh share should be legacy with no members, got %+v", resp)
+	}
+	if err := db.SetMember("proj", "bob", meta.RoleEditor, true); err != nil {
+		t.Fatal(err)
+	}
+	resp := get()
+	if resp.Legacy || len(resp.Members) != 1 {
+		t.Fatalf("after grant want explicit + 1 member, got %+v", resp)
+	}
+	if m := resp.Members[0]; m.Principal != "bob" || m.Role != "editor" || !m.CanReshare {
+		t.Fatalf("member = %+v, want bob/editor/+s", m)
+	}
+}
+
 func TestHubAuthAndHashErrors(t *testing.T) {
 	base, db := testHub(t)
 
