@@ -41,6 +41,16 @@ type MountState struct {
 	BaseSnapshot string `json:"base_snapshot"`
 }
 
+// Daemon is the slice of the running daemon the control server steers. The
+// daemon package implements it; declared here (not in the build-tagged server
+// files) so the real server and the Windows stub share one definition and can't
+// drift. The server depends on this behaviour, not the daemon package — no cycle.
+type Daemon interface {
+	StateSnapshot() State // live per-mount + paused view for GET /state
+	Pause()               // stop syncing until resumed
+	Resume()              // clear pause + catch up all mounts
+}
+
 // ErrNotRunning is returned by the client helpers when the control socket is
 // absent or unreachable — i.e. the daemon isn't running — so callers can fall
 // back to disk-based behaviour instead of treating it as a hard error.

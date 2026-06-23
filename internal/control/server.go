@@ -11,15 +11,6 @@ import (
 	"time"
 )
 
-// Daemon is the slice of the running daemon the control server steers. The
-// daemon package implements it; kept here so the server depends on a behaviour,
-// not on the daemon package (no import cycle).
-type Daemon interface {
-	StateSnapshot() State // live per-mount + paused view for GET /state
-	Pause()               // stop syncing until resumed
-	Resume()              // clear pause + catch up all mounts
-}
-
 // Server hosts the control API on a Unix socket. The zero value is unusable;
 // build one with Serve.
 type Server struct {
