@@ -50,9 +50,13 @@ type JoinRequest struct {
 // prove it actually holds the key behind Pubkey (the device id is derived from
 // Pubkey, so without this anyone could claim another device's identity). Binding
 // the one-time token means the signature can't be replayed for a different join.
+//
+// The message is domain-separated and NUL-delimited — "devbox-join\0<token>\0
+// <pubkey>" — so the (token, pubkey) boundary is unambiguous regardless of key
+// length, and the signature can't be confused with any other devbox signing use.
 func JoinChallenge(token string, pubkey []byte) []byte {
-	msg := make([]byte, 0, len(token)+len(pubkey))
-	msg = append(msg, token...)
+	msg := append([]byte("devbox-join\x00"), token...)
+	msg = append(msg, 0)
 	return append(msg, pubkey...)
 }
 

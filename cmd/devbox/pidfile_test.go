@@ -34,10 +34,9 @@ func TestRunningPidStartTokenMismatch(t *testing.T) {
 		t.Fatalf("runningPid = (%d,true) for a mismatched start token; want not-alive (stale)", pid)
 	}
 
-	// The matching token (the one writePid records for us) must read as alive,
-	// proving the guard rejects only the impostor.
-	good := []byte(pidfileContents())
-	if err := os.WriteFile(pidPath(dir), good, 0o600); err != nil {
+	// The contents writePid records for us must read as alive, proving the guard
+	// rejects only the impostor. writePid reclaims the stale file written above.
+	if err := writePid(dir); err != nil {
 		t.Fatal(err)
 	}
 	if pid, ok := runningPid(dir); !ok || pid != os.Getpid() {

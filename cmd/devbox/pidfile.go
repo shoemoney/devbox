@@ -33,7 +33,13 @@ func writePid(dir string) error {
 	for {
 		f, err := os.OpenFile(pidPath(dir), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, werr := f.WriteString(pidfileContents())
+			// Record "<pid>" or, where verifiable, "<pid> <starttoken>".
+			pid := os.Getpid()
+			line := strconv.Itoa(pid)
+			if tok, ok := processStartToken(pid); ok {
+				line += " " + tok
+			}
+			_, werr := f.WriteString(line)
 			if cerr := f.Close(); werr == nil {
 				werr = cerr
 			}
@@ -50,16 +56,6 @@ func writePid(dir string) error {
 		}
 		// Stale pidfile removed; loop retries the exclusive create.
 	}
-}
-
-// pidfileContents is the line we record for our own process: "<pid>" or, when
-// the start token is available, "<pid> <starttoken>".
-func pidfileContents() string {
-	pid := os.Getpid()
-	if tok, ok := processStartToken(pid); ok {
-		return strconv.Itoa(pid) + " " + tok
-	}
-	return strconv.Itoa(pid)
 }
 
 func removePid(dir string) { _ = os.Remove(pidPath(dir)) }
