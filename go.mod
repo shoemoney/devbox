@@ -8,6 +8,7 @@ require (
 	github.com/jotfs/fastcdc-go v0.2.0
 	github.com/spf13/cobra v1.10.2
 	github.com/zeebo/blake3 v0.2.4
+	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.53.0
 )
 

@@ -139,3 +139,43 @@ func TestPullDeleteAndEditBeatsDelete(t *testing.T) {
 		t.Fatal("hub delete did not propagate to B")
 	}
 }
+
+// TestPullSkipsFileDirClash: a hub file whose local path is a directory must be
+// skipped (recorded), not abort the whole pull (C3 resilience).
+func TestPullSkipsFileDirClash(t *testing.T) {
+	db, _ := meta.Open(":memory:")
+	defer db.Close()
+	store, _ := blobstore.NewDisk(t.TempDir())
+	srv := httptest.NewServer(hub.NewServer(db, store).Handler())
+	defer srv.Close()
+	guard, _ := secret.New(nil)
+	ig, _ := LoadIgnore(t.TempDir())
+
+	A := joinDevice(t, db, srv.URL, "alice")
+	B := joinDevice(t, db, srv.URL, "bob")
+	_ = A.Publish("s")
+
+	rootA := t.TempDir()
+	writeFile(t, rootA, "data", "hello\n")
+	writeFile(t, rootA, "ok.txt", "fine\n")
+	if _, _, err := Sync(A, rootA, "s", "", "alice", 1, ig, guard); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bob's mount has a DIRECTORY where the hub has a file "data".
+	rootB := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootB, "data", "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pr, err := Pull(B, rootB, "s", "", "bob", 2, ig, guard)
+	if err != nil {
+		t.Fatalf("pull must not abort on a file/dir clash: %v", err)
+	}
+	if len(pr.Skipped) != 1 || pr.Skipped[0] != "data" {
+		t.Fatalf("Skipped = %v, want [data]", pr.Skipped)
+	}
+	// The non-clashing file still applied.
+	if !exists(rootB, "ok.txt") {
+		t.Fatal("ok.txt should have been written despite the data/ clash")
+	}
+}

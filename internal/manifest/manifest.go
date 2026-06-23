@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
 	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
@@ -57,6 +58,9 @@ func Build(root string, ig *ignore.Matcher, guard *secret.Guard) (Manifest, []st
 		}
 		if !d.Type().IsRegular() {
 			return nil // ponytail: symlinks/specials unsupported in v1
+		}
+		if strings.HasPrefix(d.Name(), ".devbox-tmp-") {
+			return nil // transient atomic-write temp file; never sync
 		}
 		if ig != nil && ig.Match(rel, false) {
 			return nil
@@ -140,7 +144,7 @@ func Diff(old, cur Manifest) Changes {
 		oe, ok := om[path]
 		if !ok {
 			ch.Added = append(ch.Added, path)
-		} else if !sameContent(oe, ce) {
+		} else if !SameContent(oe, ce) {
 			ch.Modified = append(ch.Modified, path)
 		}
 	}
@@ -163,7 +167,9 @@ func index(m Manifest) map[string]Entry {
 	return idx
 }
 
-func sameContent(a, b Entry) bool {
+// SameContent reports whether two entries have identical size, mode, and chunk
+// list (i.e. the same file content + permissions).
+func SameContent(a, b Entry) bool {
 	if a.Size != b.Size || a.Mode != b.Mode || len(a.Chunks) != len(b.Chunks) {
 		return false
 	}

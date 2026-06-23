@@ -20,11 +20,12 @@ import (
 
 // Daemon syncs a device's mounts against their hub.
 type Daemon struct {
-	dir   string
-	cfg   config.Daemon
-	host  string
-	guard *secret.Guard
-	logf  func(string, ...any)
+	dir            string
+	cfg            config.Daemon
+	host           string
+	guard          *secret.Guard
+	maxBytesPerSec int
+	logf           func(string, ...any)
 
 	mu    sync.Mutex
 	state map[string]string // mountKey -> last-applied snapshot
@@ -32,7 +33,11 @@ type Daemon struct {
 
 // New builds a daemon from a loaded config. logf may be nil (defaults to log.Printf).
 func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) (*Daemon, error) {
-	guard, err := secret.New(nil)
+	settings, err := config.LoadSettings(dir)
+	if err != nil {
+		return nil, err
+	}
+	guard, err := secret.New(settings.Secrets.ExtraPatterns)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +48,11 @@ func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) 
 	if logf == nil {
 		logf = log.Printf
 	}
-	return &Daemon{dir: dir, cfg: cfg, host: host, guard: guard, logf: logf, state: state}, nil
+	return &Daemon{
+		dir: dir, cfg: cfg, host: host, guard: guard,
+		maxBytesPerSec: settings.Transfer.MaxKbps * 1024,
+		logf:           logf, state: state,
+	}, nil
 }
 
 // Run syncs every mount until ctx is cancelled.
@@ -82,6 +91,9 @@ func (d *Daemon) setBase(m config.Mount, base string) {
 func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 	c := transport.New(m.Hub)
 	c.SetBearer(d.cfg.Bearer)
+	if d.maxBytesPerSec > 0 {
+		c.SetRateLimit(d.maxBytesPerSec)
+	}
 
 	trigger := make(chan struct{}, 1)
 	nudge := func() {
@@ -142,7 +154,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		return
 	}
 	base := d.getBase(m)
-	now := time.Now().Unix()
+	now := time.Now().UnixNano() // nanoseconds so conflict-copy names don't collide
 
 	if m.ReadOnly {
 		pr, err := syncer.Pull(c, m.Local, m.Share, base, d.host, now, ig, d.guard)
@@ -165,11 +177,15 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 }
 
 func (d *Daemon) report(m config.Mount, pr syncer.PullResult) {
-	if len(pr.Written)+len(pr.Deleted)+len(pr.Conflicts) == 0 {
+	if len(pr.Written)+len(pr.Deleted)+len(pr.Conflicts)+len(pr.Skipped) == 0 {
 		return
 	}
-	d.logf("📥 %s: %d written, %d deleted, %d conflicts", m.Share, len(pr.Written), len(pr.Deleted), len(pr.Conflicts))
+	d.logf("📥 %s: %d written, %d deleted, %d conflicts, %d skipped",
+		m.Share, len(pr.Written), len(pr.Deleted), len(pr.Conflicts), len(pr.Skipped))
 	for _, cf := range pr.Conflicts {
 		d.logf("   💥 conflict copy: %s", cf)
+	}
+	for _, sk := range pr.Skipped {
+		d.logf("   ⚠️  skipped (filesystem clash): %s", sk)
 	}
 }

@@ -88,6 +88,29 @@ func SaveDaemon(dir string, d Daemon) error {
 	return os.Rename(tmp, daemonPath(dir))
 }
 
+// Settings is config.toml: per-machine tunables (separate from daemon.toml).
+type Settings struct {
+	Transfer struct {
+		MaxKbps int `toml:"max_kbps"` // blob transfer cap; 0 = unlimited
+	} `toml:"transfer"`
+	Secrets struct {
+		ExtraPatterns []string `toml:"extra_patterns"`
+	} `toml:"secrets"`
+}
+
+// LoadSettings reads config.toml from dir (zero Settings if absent).
+func LoadSettings(dir string) (Settings, error) {
+	var s Settings
+	b, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if os.IsNotExist(err) {
+		return s, nil
+	}
+	if err != nil {
+		return s, err
+	}
+	return s, toml.Unmarshal(b, &s)
+}
+
 func statePath(dir string) string { return filepath.Join(dir, "state.json") }
 
 // LoadState reads the per-mount last-applied snapshot map (mountKey -> snapshot).

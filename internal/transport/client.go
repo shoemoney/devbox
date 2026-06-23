@@ -18,14 +18,17 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
 // Client talks to one hub. The zero value is not usable; call New.
 type Client struct {
-	base   string // hub base URL, e.g. "http://host:8080"
-	bearer string // device bearer token; empty until Join
-	hc     *http.Client
+	base    string // hub base URL, e.g. "http://host:8080"
+	bearer  string // device bearer token; empty until Join
+	hc      *http.Client
+	limiter *rate.Limiter // optional blob-transfer rate cap; nil = unlimited
 }
 
 // New returns a Client for the hub at base (e.g. "http://host:8080").
@@ -124,7 +127,7 @@ func (c *Client) GetBlob(hash string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(c.limit(resp.Body))
 	if err != nil {
 		return nil, err
 	}
@@ -194,10 +197,11 @@ func (c *Client) do(method, path string, auth bool, body, out any) error {
 
 // raw sends raw bytes (used for blob uploads) with the bearer header set.
 func (c *Client) raw(method, path string, data []byte) error {
-	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(data))
+	req, err := http.NewRequest(method, c.base+path, c.limit(bytes.NewReader(data)))
 	if err != nil {
 		return err
 	}
+	req.ContentLength = int64(len(data)) // body is a custom reader; set length explicitly
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
 	resp, err := c.hc.Do(req)

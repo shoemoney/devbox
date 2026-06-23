@@ -18,6 +18,7 @@ type PullResult struct {
 	Written   []string // files written/updated from the hub
 	Deleted   []string // files deleted to match the hub
 	Conflicts []string // conflict copies created (local edits preserved beside canonical)
+	Skipped   []string // paths a filesystem error skipped (e.g. file<->dir clash)
 }
 
 // Pull fetches the hub head manifest for share, three-way merges it against the
@@ -60,8 +61,8 @@ func Pull(c *transport.Client, root, share, base, host string, now int64, ig *ig
 		oe, oOK := oi[p]
 		te, tOK := ti[p]
 
-		oursCh := oOK != bOK || (oOK && bOK && !sameEntry(oe, be))
-		theirsCh := tOK != bOK || (tOK && bOK && !sameEntry(te, be))
+		oursCh := oOK != bOK || (oOK && bOK && !manifest.SameContent(oe, be))
+		theirsCh := tOK != bOK || (tOK && bOK && !manifest.SameContent(te, be))
 		if !theirsCh {
 			continue // hub didn't touch p; local state (changed or not) stands
 		}
@@ -70,38 +71,50 @@ func Pull(c *transport.Client, root, share, base, host string, now int64, ig *ig
 		case !oursCh:
 			// Hub-only change: apply it verbatim.
 			if tOK {
-				if err := writeFileFromChunks(c, root, te); err != nil {
-					return PullResult{}, err
+				if fsErr, err := writeEntry(c, root, te); err != nil {
+					if !fsErr {
+						return PullResult{}, err // network error: abort, retry whole sync
+					}
+					res.Skipped = append(res.Skipped, p) // e.g. path is now a directory
+				} else {
+					res.Written = append(res.Written, p)
 				}
-				res.Written = append(res.Written, p)
+			} else if err := deleteFile(root, p); err != nil {
+				res.Skipped = append(res.Skipped, p)
 			} else {
-				if err := deleteFile(root, p); err != nil {
-					return PullResult{}, err
-				}
 				res.Deleted = append(res.Deleted, p)
 			}
 
-		case tOK && oOK && sameEntry(te, oe):
+		case tOK && oOK && manifest.SameContent(te, oe):
 			// Both made the identical change — already in agreement.
 
 		case tOK && oOK:
 			// Both edited differently: preserve ours as a conflict copy, hub canonical.
-			cp, err := preserveAsConflict(root, p, host, now)
-			if err != nil {
-				return PullResult{}, err
+			cp, cerr := preserveAsConflict(root, p, host, now)
+			if cerr != nil {
+				res.Skipped = append(res.Skipped, p) // couldn't preserve ours; never clobber
+				continue
 			}
-			if err := writeFileFromChunks(c, root, te); err != nil {
-				return PullResult{}, err
+			if fsErr, err := writeEntry(c, root, te); err != nil {
+				if !fsErr {
+					return PullResult{}, err
+				}
+				res.Skipped = append(res.Skipped, p)
+			} else {
+				res.Conflicts = append(res.Conflicts, cp)
+				res.Written = append(res.Written, p)
 			}
-			res.Conflicts = append(res.Conflicts, cp)
-			res.Written = append(res.Written, p)
 
 		case tOK && !oOK:
 			// Ours deleted, hub edited: hub wins (a delete has no bytes to keep).
-			if err := writeFileFromChunks(c, root, te); err != nil {
-				return PullResult{}, err
+			if fsErr, err := writeEntry(c, root, te); err != nil {
+				if !fsErr {
+					return PullResult{}, err
+				}
+				res.Skipped = append(res.Skipped, p)
+			} else {
+				res.Written = append(res.Written, p)
 			}
-			res.Written = append(res.Written, p)
 
 		default:
 			// Hub deleted, ours edited (!tOK && oOK): the edit wins — keep ours,
@@ -162,36 +175,31 @@ func unionKeys(maps ...map[string]manifest.Entry) map[string]struct{} {
 	return u
 }
 
-func sameEntry(a, b manifest.Entry) bool {
-	if a.Size != b.Size || a.Mode != b.Mode || len(a.Chunks) != len(b.Chunks) {
-		return false
-	}
-	for i := range a.Chunks {
-		if a.Chunks[i] != b.Chunks[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func writeFileFromChunks(c *transport.Client, root string, e manifest.Entry) error {
+// writeEntry downloads e's content and writes it atomically. A network/download
+// error returns fsErr=false (the caller should abort and retry the whole sync);
+// a filesystem error — e.g. the path is currently a directory — returns
+// fsErr=true so the caller can skip just that path instead of wedging the mount.
+func writeEntry(c *transport.Client, root string, e manifest.Entry) (fsErr bool, err error) {
 	var buf []byte
 	for _, h := range e.Chunks {
-		b, err := c.GetBlob(h)
-		if err != nil {
-			return err
+		b, gerr := c.GetBlob(h)
+		if gerr != nil {
+			return false, gerr // network
 		}
 		buf = append(buf, b...)
 	}
 	dst := filepath.Join(root, filepath.FromSlash(e.Path))
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+	if merr := os.MkdirAll(filepath.Dir(dst), 0o755); merr != nil {
+		return true, merr
 	}
 	mode := os.FileMode(e.Mode)
 	if mode == 0 {
 		mode = 0o644
 	}
-	return atomicWrite(dst, buf, mode)
+	if werr := atomicWrite(dst, buf, mode); werr != nil {
+		return true, werr
+	}
+	return false, nil
 }
 
 func deleteFile(root, relPath string) error {
@@ -207,13 +215,25 @@ func deleteFile(root, relPath string) error {
 func preserveAsConflict(root, relPath, host string, ts int64) (string, error) {
 	ext := filepath.Ext(relPath)
 	stem := strings.TrimSuffix(relPath, ext)
-	cp := fmt.Sprintf("%s.conflict-%s-%d%s", stem, host, ts, ext)
 	src := filepath.Join(root, filepath.FromSlash(relPath))
-	dst := filepath.Join(root, filepath.FromSlash(cp))
-	if err := os.Rename(src, dst); err != nil {
-		return "", err
+	// Probe for a free name (ts is nanoseconds, so collisions are already rare;
+	// the counter is belt-and-suspenders against ever overwriting a prior copy).
+	for n := 0; ; n++ {
+		cp := fmt.Sprintf("%s.conflict-%s-%d%s", stem, host, ts, ext)
+		if n > 0 {
+			cp = fmt.Sprintf("%s.conflict-%s-%d-%d%s", stem, host, ts, n, ext)
+		}
+		dst := filepath.Join(root, filepath.FromSlash(cp))
+		if _, err := os.Stat(dst); err == nil {
+			continue // taken
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return "", err
+		}
+		return cp, nil
 	}
-	return cp, nil
 }
 
 // atomicWrite writes data to path via a temp file + rename (atomic on POSIX and
