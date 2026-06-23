@@ -1,0 +1,41 @@
+# On `vX.Y.Z` tag push: cross-compile every target and attach installer-named
+# assets to a GitHub release (mirror of the Forgejo release). Point install.sh at
+# this with DEVBOX_RELEASE_URL=https://github.com/<owner>/devbox/releases/download/<tag>.
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build all targets
+        run: VERSION="${{ github.ref_name }}" ./scripts/build-release.sh
+      - name: De-version asset names (match install.sh)
+        run: |
+          cd dist
+          for f in devbox_*_* devbox-hub_*_*; do
+            [ -f "$f" ] || continue
+            ext=""; case "$f" in *.exe) ext=".exe"; f="${f%.exe}";; esac
+            arch="${f##*_}"; rest="${f%_*}"; os="${rest##*_}"; bin="${rest%_*}"; bin="${bin%_*}"
+            mv "$f$ext" "${bin}_${os}_${arch}${ext}"
+          done
+          ls -la
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

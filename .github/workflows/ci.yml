@@ -1,0 +1,21 @@
+# GitHub Actions mirror of .forgejo/workflows/ci.yml. This one runs on GitHub's
+# hosted runners today (Forgejo's waits on a self-hosted runner), so it's what
+# actually gates PRs green/red on the github mirror.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  vet-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./... -race

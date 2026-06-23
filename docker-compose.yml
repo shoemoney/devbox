@@ -1,6 +1,7 @@
 # devbox hub — drop-in for a NAS (TrueNAS SCALE, Synology, unRAID, any Docker host).
 #
-#   docker compose up -d --build                 # hub on :8088, data persisted, self-healing
+#   docker compose up -d                         # pulls the published image, hub on :8088
+#   docker compose up -d --build                 # build from local source instead
 #   docker compose exec hub devbox-hub token --data /data   # mint a join token
 #   docker compose logs -f hub
 #
@@ -8,9 +9,9 @@
 
 services:
   hub:
+    # Published image is the default; `--build` rebuilds from the local source tree.
+    image: git.shoemoney.ai/shoemoney/devbox-hub:latest
     build: .
-    # Prefer a published image once you have one:
-    # image: git.shoemoney.ai/shoemoney/devbox-hub:latest
     container_name: devbox-hub
     restart: unless-stopped        # keep-alive + auto-restart + recover (crash & reboot)
     ports:

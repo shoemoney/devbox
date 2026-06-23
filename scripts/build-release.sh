@@ -10,7 +10,8 @@ VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS="-s -w -X main.version=$VERSION"
 
 BINS=(devbox devbox-hub)
-TARGETS=(linux/amd64 darwin/arm64 darwin/amd64 windows/amd64)
+# linux/arm64 = Raspberry Pi 5/4/3 (64-bit) + arm Macs' Linux VMs; linux/arm = 32-bit Pi OS.
+TARGETS=(linux/amd64 linux/arm64 linux/arm darwin/arm64 darwin/amd64 windows/amd64)
 
 rm -rf dist && mkdir -p dist
 

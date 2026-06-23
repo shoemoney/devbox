@@ -1,0 +1,23 @@
+# On `vX.Y.Z` tag push: cross-compile every target and publish the Forgejo
+# release with installer-named assets. Reuses scripts/release.sh so the local
+# one-shot and CI never drift. Needs a runner + a RELEASE_TOKEN secret (a
+# Forgejo token with write:repository). Until both exist, run release.sh by hand.
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags + history for `git describe`
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: ./scripts/release.sh "${{ github.ref_name }}"
+        env:
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
