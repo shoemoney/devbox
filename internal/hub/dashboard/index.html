@@ -1,5 +1,1153 @@
-<!doctype html><meta charset="utf-8"><title>devbox hub</title>
-<!-- placeholder — replaced by the embedded live dashboard at build/integration time -->
-<body style="background:#0b0e14;color:#cdd9e5;font:14px system-ui;padding:2rem">
-📦 devbox hub dashboard — loading…
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>devbox · hub control</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='88'%3E%F0%9F%93%A6%3C/text%3E%3C/svg%3E" />
+<!--
+  devbox hub dashboard — single self-contained file. No build step, no framework,
+  no external CDN/network deps (the hub may run air-gapped). Vanilla JS + <canvas>.
+  Served from the hub binary at "/" via go:embed.
+  Demo mode: append ?demo=1 to synthesize a fake live stream (also works over file://).
+-->
+<style>
+  /* ---- design tokens ---------------------------------------------------- */
+  :root{
+    --bg:#05070d;
+    --bg2:#080b14;
+    --ink:#dfe9ff;
+    --ink-dim:#7c89a8;
+    --ink-faint:#46506a;
+    --cyan:#27e8ff;
+    --magenta:#ff3df0;
+    --lime:#b6ff3a;
+    --amber:#ffb23d;
+    --red:#ff4d6a;
+    --glass:rgba(18,26,44,0.42);
+    --glass-brd:rgba(96,140,220,0.16);
+    --grid:rgba(80,130,210,0.05);
+    /* distinctive type: a tight monospace display + humanist mono body.
+       fully system-resolved so it works air-gapped with zero network fonts. */
+    --mono:"JetBrains Mono","IBM Plex Mono","SFMono-Regular",ui-monospace,"Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --disp:"JetBrains Mono","IBM Plex Mono",ui-monospace,Menlo,monospace;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--mono);
+    font-size:14px;
+    line-height:1.5;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    /* layered atmosphere: corner glows + a faint scanline veil */
+    background-image:
+      radial-gradient(1100px 720px at 78% -8%, rgba(255,61,240,0.10), transparent 60%),
+      radial-gradient(1000px 700px at 8% 108%, rgba(39,232,255,0.10), transparent 60%),
+      radial-gradient(900px 900px at 50% 50%, rgba(8,12,24,0) 40%, rgba(2,3,7,0.7) 100%);
+  }
+  /* subtle CRT scanlines overlay for ops-room texture */
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:50;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,0.16) 2px 3px);
+    mix-blend-mode:overlay;opacity:.5;
+  }
+
+  ::selection{background:rgba(39,232,255,0.30);color:#fff}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:rgba(96,140,220,0.22);border-radius:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* ---- shell ------------------------------------------------------------ */
+  #app{display:grid;grid-template-rows:auto 1fr;height:100vh;position:relative;z-index:1}
+
+  /* ---- header ----------------------------------------------------------- */
+  header{
+    display:flex;align-items:center;gap:22px;
+    padding:14px 26px;
+    border-bottom:1px solid var(--glass-brd);
+    background:linear-gradient(180deg,rgba(10,15,28,0.72),rgba(6,9,18,0.30));
+    backdrop-filter:blur(10px);
+    position:relative;z-index:6;
+  }
+  .brand{display:flex;align-items:center;gap:12px;letter-spacing:.02em}
+  .brand .mark{
+    font-size:26px;filter:drop-shadow(0 0 10px rgba(39,232,255,.7));
+    transform:translateY(1px);
+  }
+  .brand b{
+    font-family:var(--disp);font-weight:800;font-size:18px;letter-spacing:.14em;
+    background:linear-gradient(92deg,var(--cyan),#9fb9ff 55%,var(--magenta));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .brand .sub{color:var(--ink-faint);font-size:10px;letter-spacing:.42em;text-transform:uppercase;margin-top:2px}
+  .brand .stack{display:flex;flex-direction:column;line-height:1.05}
+
+  .hmeta{display:flex;gap:26px;margin-left:6px}
+  .hmeta .k{font-size:9.5px;letter-spacing:.28em;text-transform:uppercase;color:var(--ink-faint)}
+  .hmeta .v{font-size:13px;color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .hmeta .v b{color:var(--cyan);font-weight:600}
+
+  .spacer{flex:1}
+
+  .conn{display:flex;align-items:center;gap:9px;
+    padding:7px 13px;border-radius:999px;
+    border:1px solid var(--glass-brd);background:var(--glass);
+    font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-dim)}
+  .conn .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-faint);
+    box-shadow:0 0 0 0 rgba(0,0,0,0)}
+  .conn.live .dot{background:var(--lime);box-shadow:0 0 10px var(--lime);animation:pulseDot 1.8s ease-in-out infinite}
+  .conn.live{color:var(--lime);border-color:rgba(182,255,58,.28)}
+  .conn.recon .dot{background:var(--amber);box-shadow:0 0 10px var(--amber);animation:pulseDot .7s ease-in-out infinite}
+  .conn.recon{color:var(--amber);border-color:rgba(255,178,61,.30)}
+  .conn.demo .dot{background:var(--magenta);box-shadow:0 0 10px var(--magenta);animation:pulseDot 1.4s ease-in-out infinite}
+  .conn.demo{color:var(--magenta);border-color:rgba(255,61,240,.30)}
+  @keyframes pulseDot{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.55}}
+
+  /* ---- main grid -------------------------------------------------------- */
+  main{
+    display:grid;
+    grid-template-columns:1fr 340px;
+    grid-template-rows:auto 1fr;
+    gap:16px;padding:16px 18px;min-height:0;
+    grid-template-areas:"metrics feed" "stage feed";
+  }
+  .metrics{grid-area:metrics}
+  .stage{grid-area:stage;min-height:0}
+  .feed{grid-area:feed;min-height:0}
+
+  /* ---- metric tiles ----------------------------------------------------- */
+  .metrics{display:grid;grid-template-columns:repeat(8,1fr);gap:12px}
+  .tile{
+    position:relative;overflow:hidden;
+    border:1px solid var(--glass-brd);border-radius:14px;
+    background:
+      linear-gradient(180deg,rgba(24,34,58,0.50),rgba(10,15,28,0.30));
+    backdrop-filter:blur(9px);
+    padding:13px 14px 10px;min-height:96px;
+    display:flex;flex-direction:column;justify-content:space-between;
+    box-shadow:inset 0 1px 0 rgba(150,190,255,0.06), 0 10px 26px rgba(0,0,0,.32);
+  }
+  /* top neon hairline keyed to the tile's accent */
+  .tile::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,var(--accent,var(--cyan)),transparent);opacity:.7}
+  .tile .label{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim);display:flex;align-items:center;gap:6px}
+  .tile .label .ic{color:var(--accent,var(--cyan));filter:drop-shadow(0 0 6px var(--accent,var(--cyan)))}
+  .tile .num{font-family:var(--disp);font-weight:700;font-size:27px;line-height:1;letter-spacing:.01em;
+    font-variant-numeric:tabular-nums;color:#fff;margin-top:2px;
+    text-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 45%,transparent)}
+  .tile .num .unit{font-size:12px;color:var(--ink-dim);font-weight:500;margin-left:3px;letter-spacing:0}
+  .tile .sub{font-size:10px;color:var(--ink-faint);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  .tile.flash{animation:tileFlash .9s ease-out}
+  @keyframes tileFlash{0%{box-shadow:inset 0 0 0 1px var(--accent), 0 0 28px color-mix(in srgb,var(--accent) 60%,transparent)}100%{}}
+  .tile .spark{position:absolute;right:8px;bottom:8px;width:96px;height:30px;opacity:.95}
+  .tile.wide{grid-column:span 2}
+
+  /* ---- stage (hero canvas) --------------------------------------------- */
+  .stage{
+    position:relative;border:1px solid var(--glass-brd);border-radius:16px;overflow:hidden;
+    background:radial-gradient(120% 120% at 50% 42%, rgba(12,18,34,0.5), rgba(4,6,12,0.7));
+    box-shadow:inset 0 1px 0 rgba(150,190,255,0.05), 0 18px 50px rgba(0,0,0,.4);
+  }
+  #flow{display:block;width:100%;height:100%}
+  .stage .corner{position:absolute;font-size:9px;letter-spacing:.28em;text-transform:uppercase;color:var(--ink-faint);z-index:3;pointer-events:none}
+  .stage .corner.tl{top:13px;left:15px}
+  .stage .corner.tr{top:13px;right:15px;text-align:right}
+  .stage .corner.bl{bottom:13px;left:15px}
+  .stage .legend{position:absolute;bottom:13px;right:15px;display:flex;gap:16px;z-index:3;pointer-events:none}
+  .stage .legend span{display:flex;align-items:center;gap:6px;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim)}
+  .stage .legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .stage .ttl{font-family:var(--disp);font-weight:700;letter-spacing:.06em}
+  .stage .empty{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;
+    z-index:2;pointer-events:none;color:var(--ink-dim);transition:opacity .6s}
+  .stage .empty .big{font-family:var(--disp);font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--ink-dim)}
+  .stage .empty .sm{font-size:10px;letter-spacing:.2em;color:var(--ink-faint)}
+
+  /* ---- activity feed ---------------------------------------------------- */
+  .feed{
+    border:1px solid var(--glass-brd);border-radius:16px;overflow:hidden;
+    background:linear-gradient(180deg,rgba(18,26,46,0.42),rgba(8,12,22,0.30));
+    backdrop-filter:blur(9px);display:flex;flex-direction:column;
+    box-shadow:inset 0 1px 0 rgba(150,190,255,0.05), 0 18px 50px rgba(0,0,0,.4);
+  }
+  .feed h2{
+    font-family:var(--disp);font-size:11px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;
+    color:var(--ink-dim);padding:14px 16px 11px;border-bottom:1px solid var(--glass-brd);
+    display:flex;align-items:center;gap:9px}
+  .feed h2 .live-dot{width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 9px var(--lime);animation:pulseDot 1.8s infinite;margin-left:auto}
+  .feed .rows{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 6px 10px}
+  .row{
+    display:grid;grid-template-columns:22px 1fr auto;gap:9px;align-items:start;
+    padding:8px 10px;border-radius:9px;position:relative;
+    animation:rowIn .42s cubic-bezier(.2,.9,.25,1);
+  }
+  .row+.row{margin-top:1px}
+  .row:hover{background:rgba(120,160,240,0.05)}
+  .row .ic{font-size:13px;line-height:1.4;text-align:center;filter:drop-shadow(0 0 6px currentColor)}
+  .row .body{min-width:0}
+  .row .msg{font-size:12px;color:var(--ink);letter-spacing:.01em;word-break:break-word}
+  .row .msg b{font-weight:700}
+  .row .who{color:var(--cyan);font-weight:700}
+  .row .tgt{color:var(--magenta);font-weight:700}
+  .row .meta{font-size:9.5px;color:var(--ink-faint);letter-spacing:.06em;margin-top:2px;font-variant-numeric:tabular-nums}
+  .row .ago{font-size:9.5px;color:var(--ink-faint);font-variant-numeric:tabular-nums;letter-spacing:.04em;white-space:nowrap;padding-top:1px}
+  .row.push .ic{color:var(--cyan)}
+  .row.join .ic{color:var(--lime)}
+  .row.leave .ic{color:var(--amber)}
+  .row.revoke .ic{color:var(--red)}
+  .row.head .ic{color:var(--magenta)}
+  /* left accent bar */
+  .row::before{content:"";position:absolute;left:2px;top:9px;bottom:9px;width:2px;border-radius:2px;background:currentColor;opacity:.0}
+  .row.push::before{background:var(--cyan);opacity:.5}
+  .row.join::before{background:var(--lime);opacity:.5}
+  @keyframes rowIn{from{opacity:0;transform:translateY(-8px) scale(.99)}to{opacity:1;transform:none}}
+  .feed .empty-feed{padding:34px 16px;text-align:center;color:var(--ink-faint);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
+
+  /* responsive: stack on narrow */
+  @media(max-width:1080px){
+    main{grid-template-columns:1fr;grid-template-areas:"metrics" "stage" "feed"}
+    .feed{max-height:300px}
+    .metrics{grid-template-columns:repeat(4,1fr)}
+    .stage{min-height:360px}
+    .hmeta{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <span class="mark">📦</span>
+      <div class="stack">
+        <b>DEVBOX</b>
+        <span class="sub">hub · control</span>
+      </div>
+    </div>
+    <div class="hmeta">
+      <div><div class="k">version</div><div class="v">v<b id="m-version">—</b></div></div>
+      <div><div class="k">uptime</div><div class="v" id="m-uptime">—</div></div>
+      <div><div class="k">throughput</div><div class="v"><b id="m-tput">0</b> ev/min</div></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-label">connecting</span></div>
+  </header>
+
+  <main>
+    <!-- METRIC TILES -->
+    <section class="metrics" id="metrics">
+      <div class="tile" style="--accent:var(--cyan)">
+        <div class="label"><span class="ic">◉</span> devices online</div>
+        <div class="num"><span id="t-online">0</span><span class="unit">/ <span id="t-devices">0</span></span></div>
+        <div class="sub" id="t-online-sub">awaiting peers</div>
+        <canvas class="spark" id="sp-online"></canvas>
+      </div>
+      <div class="tile" style="--accent:var(--magenta)">
+        <div class="label"><span class="ic">⬡</span> shares</div>
+        <div class="num" id="t-shares">0</div>
+        <div class="sub" id="t-shares-sub">repositories</div>
+        <canvas class="spark" id="sp-shares"></canvas>
+      </div>
+      <div class="tile" style="--accent:var(--lime)">
+        <div class="label"><span class="ic">❖</span> snapshots</div>
+        <div class="num" id="t-snaps">0</div>
+        <div class="sub" id="t-snaps-sub">commits</div>
+        <canvas class="spark" id="sp-snaps"></canvas>
+      </div>
+      <div class="tile" style="--accent:var(--amber)">
+        <div class="label"><span class="ic">▦</span> chunks</div>
+        <div class="num" id="t-chunks">0</div>
+        <div class="sub" id="t-chunks-sub">content blocks</div>
+        <canvas class="spark" id="sp-chunks"></canvas>
+      </div>
+      <div class="tile wide" style="--accent:var(--cyan)">
+        <div class="label"><span class="ic">⛁</span> total data</div>
+        <div class="num"><span id="t-bytes">0</span><span class="unit" id="t-bytes-u">B</span></div>
+        <div class="sub" id="t-bytes-sub">stored in blobstore</div>
+        <canvas class="spark" id="sp-bytes"></canvas>
+      </div>
+      <div class="tile" style="--accent:var(--lime)">
+        <div class="label"><span class="ic">↑</span> push rate</div>
+        <div class="num"><span id="t-prate">0</span><span class="unit">/min</span></div>
+        <div class="sub" id="t-prate-sub">last 60s</div>
+        <canvas class="spark" id="sp-prate"></canvas>
+      </div>
+      <div class="tile" style="--accent:var(--magenta)">
+        <div class="label"><span class="ic">⟿</span> data rate</div>
+        <div class="num"><span id="t-brate">0</span><span class="unit" id="t-brate-u">B/min</span></div>
+        <div class="sub" id="t-brate-sub">last 60s</div>
+        <canvas class="spark" id="sp-brate"></canvas>
+      </div>
+    </section>
+
+    <!-- HERO FLOW CANVAS -->
+    <section class="stage">
+      <canvas id="flow"></canvas>
+      <div class="corner tl"><span class="ttl">SYNC&nbsp;FABRIC</span> · live topology</div>
+      <div class="corner tr" id="stage-stat">0 nodes · 0 flows/s</div>
+      <div class="corner bl">hub @ core · devices orbiting · shares outer</div>
+      <div class="legend">
+        <span><i style="background:var(--cyan);box-shadow:0 0 8px var(--cyan)"></i>device</span>
+        <span><i style="background:var(--magenta);box-shadow:0 0 8px var(--magenta)"></i>share</span>
+        <span><i style="background:var(--lime);box-shadow:0 0 8px var(--lime)"></i>flow</span>
+      </div>
+      <div class="empty" id="empty"><div class="big">waiting for activity</div><div class="sm">hub online · no peers connected yet</div></div>
+    </section>
+
+    <!-- ACTIVITY FEED -->
+    <aside class="feed">
+      <h2>activity stream <span class="live-dot"></span></h2>
+      <div class="rows" id="feed-rows">
+        <div class="empty-feed" id="feed-empty">no events yet</div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+"use strict";
+(function(){
+/* =======================================================================
+   devbox hub dashboard — vanilla, no deps.
+   Sections: utils · state · canvas flow engine · sparklines · metrics ·
+             feed · data layer (fetch + SSE) · demo synthesizer · boot.
+   ======================================================================= */
+
+  /* ---- utils ---------------------------------------------------------- */
+  const $ = id => document.getElementById(id);
+  const TAU = Math.PI*2;
+  const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  const rand=(a,b)=>a+Math.random()*(b-a);
+  const pick=a=>a[(Math.random()*a.length)|0];
+  const easeOutCubic=t=>1-Math.pow(1-t,3);
+  const easeInOutQuad=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+
+  function humanBytes(n){
+    if(n==null||isNaN(n)) return ["0","B"];
+    if(n<1024) return [String(n|0),"B"];
+    const u=["KB","MB","GB","TB","PB"]; let i=-1, v=n;
+    do{ v/=1024; i++; }while(v>=1024 && i<u.length-1);
+    return [v>=100?v.toFixed(0):v.toFixed(v>=10?1:2), u[i]];
+  }
+  function relTime(ts){
+    const s=Math.max(0,(Date.now()-ts)/1000);
+    if(s<1) return "now";
+    if(s<60) return (s|0)+"s ago";
+    const m=s/60; if(m<60) return (m|0)+"m ago";
+    const h=m/60; if(h<24) return (h|0)+"h ago";
+    return ((h/24)|0)+"d ago";
+  }
+  // deterministic hue from a string id (stable node colors)
+  function hashHue(str){let h=0;for(let i=0;i<str.length;i++)h=(h*31+str.charCodeAt(i))|0;return ((h%360)+360)%360;}
+
+  const DEMO = /[?&]demo=1\b/.test(location.search);
+
+  /* ---- shared state --------------------------------------------------- */
+  const state = {
+    hub:{version:"—",uptime_s:0},
+    totals:{devices:0,online:0,shares:0,snapshots:0,chunks:0,bytes:0},
+    devices:[],            // raw from /api/state
+    shares:[],
+    deviceById:new Map(),  // id -> raw device
+    shareByName:new Map(), // name -> raw share
+    startedAt:Date.now(),
+    baseUptime:0,          // uptime_s at last state fetch
+    baseUptimeAt:Date.now(),
+    // rolling event windows for rate metrics (timestamps + bytes)
+    pushTimes:[],          // ms timestamps of pushes (last 60s)
+    pushBytes:[],          // [ts, bytes]
+    eventsForTput:[],      // all event ms timestamps (last 60s) for header
+    flowsThisSec:0, flowsLastSec:0, _secMark:0,
+  };
+
+  /* =====================================================================
+     CANVAS FLOW ENGINE — the hero. HUB core + orbiting device nodes +
+     outer share nodes + glowing particles on push, with fan-out ripple.
+     ===================================================================== */
+  const flow = (function(){
+    const cv=$("flow"); const ctx=cv.getContext("2d");
+    let W=0,H=0,DPR=1,CX=0,CY=0,R_DEV=0,R_SHARE=0;
+    const nodes={device:new Map(), share:new Map()}; // id/name -> node
+    const particles=[];      // active flow particles
+    const ripples=[];        // fan-out / join bursts
+    const bgStars=[];        // ambient particle field
+    let coreFlare=0;         // 0..1 transient bloom on the hub core
+    let coreEnergy=0;        // sustained energy from recent traffic
+    let t0=performance.now();
+
+    function resize(){
+      const r=cv.getBoundingClientRect();
+      DPR=Math.min(window.devicePixelRatio||1, 2);
+      W=Math.max(320,r.width); H=Math.max(260,r.height);
+      cv.width=W*DPR; cv.height=H*DPR;
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+      CX=W/2; CY=H/2;
+      const m=Math.min(W,H);
+      R_DEV   = m*0.30;
+      R_SHARE = Math.min(W,H)*0.46;
+      layout();
+      seedStars();
+    }
+    function seedStars(){
+      bgStars.length=0;
+      const n=Math.round((W*H)/14000);
+      for(let i=0;i<n;i++){
+        bgStars.push({x:Math.random()*W,y:Math.random()*H,
+          z:rand(.2,1),tw:rand(0,TAU),sp:rand(.4,1.4)});
+      }
+    }
+
+    function makeNode(kind,id,name){
+      const hue = kind==="device" ? 188 : 308; // cyan-ish / magenta-ish
+      const n={kind,id,name:name||id,
+        angle:Math.random()*TAU, // assigned in layout
+        radius:kind==="device"?R_DEV:R_SHARE,
+        x:CX,y:CY, tx:CX,ty:CY,
+        born:performance.now(),
+        appear:0,               // 0..1 materialize
+        online:true,
+        pulse:0,                // transient activity pulse
+        glow:0,                 // sustained glow
+        hue,
+        size:kind==="device"?7:9,
+        wob:Math.random()*TAU,  // orbital wobble phase
+      };
+      nodes[kind].set(id,n);
+      layout();
+      return n;
+    }
+    function ensureDevice(id,name,online){
+      let n=nodes.device.get(id);
+      if(!n){ n=makeNode("device",id,name); n.appear=0; }
+      if(name) n.name=name;
+      if(online!=null) n.online=online;
+      return n;
+    }
+    function ensureShare(name){
+      let n=nodes.share.get(name);
+      if(!n){ n=makeNode("share",name,name); n.appear=0; }
+      return n;
+    }
+    // evenly distribute nodes of each ring by angle, keep them animating to target
+    function layout(){
+      placeRing(nodes.device, R_DEV, -Math.PI/2);
+      placeRing(nodes.share, R_SHARE, -Math.PI/2 + 0.18);
+    }
+    function placeRing(map,radius,offset){
+      const arr=[...map.values()]; const n=arr.length;
+      arr.forEach((nd,i)=>{
+        nd.radius=radius;
+        nd.angle = offset + (n? (i/n)*TAU : 0);
+      });
+    }
+    // remove nodes no longer present in state (devices/shares pruned)
+    function reconcile(){
+      // mark device online flags + prune stale that aren't in state and have no name match
+      // (we keep on-the-fly nodes; pruning is conservative to avoid flicker)
+    }
+
+    // public: trigger a push flow device->hub->share, then fan-out ripple
+    function pushFlow(deviceId,shareName,bytes){
+      const d=nodes.device.get(deviceId);
+      const s=nodes.share.get(shareName);
+      coreFlare=Math.min(1.4,coreFlare+0.65);
+      coreEnergy=Math.min(1,coreEnergy+0.30);
+      if(d){ d.pulse=1; d.glow=Math.min(1,d.glow+0.5); }
+      if(s){ s.pulse=1; s.glow=Math.min(1,s.glow+0.5); }
+      // particle: device -> core (phase A), then core -> share (phase B)
+      const mag=clamp(Math.log2((bytes||1)+1)/16,0.3,1.4);
+      particles.push({
+        phase:"in", t:0, speed:rand(1.05,1.35),
+        from:d?{x:d.x,y:d.y}:{x:CX+rand(-40,40),y:CY-R_DEV},
+        share:shareName, mag,
+        hue: d? d.hue : 188,
+        trail:[],
+      });
+    }
+    function joinBurst(deviceId,name){
+      const d=ensureDevice(deviceId,name,true);
+      d.appear=0; d.born=performance.now();
+      ripples.push({x:d.x,y:d.y,r:0,max:60,life:1,hue:96,w:2.5}); // lime burst
+      coreFlare=Math.min(1.4,coreFlare+0.25);
+    }
+    function fanOut(shareName){
+      const s=nodes.share.get(shareName); if(!s) return;
+      // soft ripple from share to each online device
+      ripples.push({x:s.x,y:s.y,r:0,max:Math.max(W,H)*0.5,life:1,hue:308,w:1.6,ring:true});
+      for(const d of nodes.device.values()){
+        if(!d.online) continue;
+        // a faint propagation particle share->device
+        particles.push({phase:"out2",t:0,speed:rand(.7,1.0),
+          from:{x:s.x,y:s.y}, to:{x:d.x,y:d.y}, hue:308, mag:.5, trail:[], faint:true});
+      }
+    }
+
+    /* ---- per-frame integrate + draw ---- */
+    function frame(now){
+      const dt=Math.min(50, now-t0)/16.6667; t0=now;
+      const time=now/1000;
+
+      // background wipe with slight trail for bloom feel
+      ctx.globalCompositeOperation="source-over";
+      ctx.fillStyle="rgba(5,7,13,0.34)";
+      ctx.fillRect(0,0,W,H);
+
+      drawGrid(time);
+      drawStars(time,dt);
+
+      // update node positions (orbit toward target with gentle wobble)
+      stepNodes(now,dt,time);
+
+      // connection spokes (faint) hub<->online devices
+      drawSpokes(time);
+
+      drawNodes(now,time);
+      stepParticles(dt);
+      stepRipples(dt);
+      drawCore(now,time);
+
+      // decay energies
+      coreFlare=Math.max(0,coreFlare-0.04*dt);
+      coreEnergy=Math.max(0,coreEnergy-0.006*dt);
+
+      // flows/sec accounting for stage stat
+      const sec=(now/1000)|0;
+      if(sec!==state._secMark){ state._secMark=sec; state.flowsLastSec=state.flowsThisSec; state.flowsThisSec=0; }
+
+      requestAnimationFrame(frame);
+    }
+
+    function drawGrid(time){
+      ctx.save();
+      ctx.strokeStyle="rgba(70,120,210,0.05)";
+      ctx.lineWidth=1;
+      const g=46, ox=(time*5)%g, oy=(time*3)%g;
+      ctx.beginPath();
+      for(let x=-ox;x<W;x+=g){ctx.moveTo(x,0);ctx.lineTo(x,H);}
+      for(let y=-oy;y<H;y+=g){ctx.moveTo(0,y);ctx.lineTo(W,y);}
+      ctx.stroke();
+      ctx.restore();
+    }
+    function drawStars(time,dt){
+      ctx.save();
+      for(const s of bgStars){
+        s.tw+=0.02*s.sp*dt;
+        const a=(0.18+0.22*(0.5+0.5*Math.sin(s.tw)))*s.z;
+        ctx.fillStyle="rgba(150,190,255,"+a.toFixed(3)+")";
+        ctx.fillRect(s.x,s.y,s.z*1.6,s.z*1.6);
+      }
+      ctx.restore();
+    }
+
+    function stepNodes(now,dt,time){
+      for(const map of [nodes.device,nodes.share]){
+        for(const n of map.values()){
+          n.appear=Math.min(1,n.appear+0.05*dt);
+          n.wob+=0.012*dt;
+          const wob=Math.sin(n.wob)*(n.kind==="device"?5:7);
+          const ease=easeOutCubic(n.appear);
+          const rr=n.radius+wob;
+          const ang=n.angle + Math.sin(time*0.12 + n.hue)*0.012; // tiny drift
+          const tx=CX+Math.cos(ang)*rr, ty=CY+Math.sin(ang)*rr;
+          // ease toward target so re-layouts glide
+          n.x=lerp(n.x, tx, 0.12*dt) ; n.y=lerp(n.y, ty, 0.12*dt);
+          // entry: scale from core
+          if(n.appear<1){ n.x=lerp(CX,n.x,ease); n.y=lerp(CY,n.y,ease); }
+          n.pulse=Math.max(0,n.pulse-0.03*dt);
+          n.glow=Math.max(0,n.glow-0.012*dt);
+        }
+      }
+    }
+
+    function drawSpokes(time){
+      ctx.save();
+      ctx.lineWidth=1;
+      for(const d of nodes.device.values()){
+        if(d.appear<0.2) continue;
+        const a=(d.online?0.10:0.04)*d.appear + d.glow*0.18;
+        ctx.strokeStyle="rgba(39,232,255,"+a.toFixed(3)+")";
+        ctx.beginPath(); ctx.moveTo(CX,CY); ctx.lineTo(d.x,d.y); ctx.stroke();
+      }
+      for(const s of nodes.share.values()){
+        if(s.appear<0.2) continue;
+        const a=0.06*s.appear + s.glow*0.16;
+        ctx.strokeStyle="rgba(255,61,240,"+a.toFixed(3)+")";
+        ctx.setLineDash([2,7]);
+        ctx.beginPath(); ctx.moveTo(CX,CY); ctx.lineTo(s.x,s.y); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+
+    function nodeColor(n,l){ // l = lightness boost 0..1
+      const sat = n.kind==="device" ? 95 : 90;
+      return "hsl("+n.hue+","+sat+"%,"+(58+l*22)+"%)";
+    }
+
+    function drawNodes(now,time){
+      // shares first (outer), then devices (inner) so devices sit "above"
+      drawRing(nodes.share,time,true);
+      drawRing(nodes.device,time,false);
+    }
+    function drawRing(map,time,isShare){
+      for(const n of map.values()){
+        if(n.appear<=0.001) continue;
+        const breathe=0.5+0.5*Math.sin(time*1.4 + n.wob);
+        const onF = n.online? 1 : 0.32;
+        const base=n.size*(0.85+0.15*breathe);
+        const sz=base*(1+n.pulse*0.7)*lerp(0.3,1,easeOutCubic(n.appear));
+        const glow=clamp(0.35*onF + n.glow*0.9 + n.pulse*0.6, 0, 1.6);
+
+        // outer halo
+        const hg=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,sz*4.2);
+        const col=nodeColor(n,n.pulse*0.6);
+        hg.addColorStop(0,"hsla("+n.hue+","+(isShare?90:95)+"%,65%,"+(0.34*glow).toFixed(3)+")");
+        hg.addColorStop(1,"hsla("+n.hue+",90%,60%,0)");
+        ctx.fillStyle=hg;
+        ctx.beginPath(); ctx.arc(n.x,n.y,sz*4.2,0,TAU); ctx.fill();
+
+        // core dot
+        ctx.save();
+        ctx.shadowBlur=14*glow; ctx.shadowColor=col;
+        ctx.fillStyle = n.online? col : "hsla("+n.hue+",40%,50%,0.7)";
+        ctx.beginPath();
+        if(isShare){ // shares = rounded hex feel via slightly larger soft disc + ring
+          ctx.arc(n.x,n.y,sz,0,TAU); ctx.fill();
+          ctx.shadowBlur=0;
+          ctx.lineWidth=1.4; ctx.strokeStyle="hsla("+n.hue+",90%,72%,"+(0.5*onF).toFixed(3)+")";
+          ctx.beginPath(); ctx.arc(n.x,n.y,sz+4+n.pulse*4,0,TAU); ctx.stroke();
+        } else {
+          ctx.arc(n.x,n.y,sz,0,TAU); ctx.fill();
+        }
+        ctx.restore();
+
+        // bright center pip
+        ctx.fillStyle="rgba(255,255,255,"+(0.65*onF*lerp(.2,1,n.appear)).toFixed(3)+")";
+        ctx.beginPath(); ctx.arc(n.x,n.y,sz*0.34,0,TAU); ctx.fill();
+
+        // label
+        const lx=n.x, ly=n.y + sz + 13;
+        ctx.font="600 10px "+getMono();
+        ctx.textAlign="center"; ctx.textBaseline="middle";
+        const a=lerp(0,n.online?0.92:0.5,easeOutCubic(n.appear));
+        ctx.fillStyle="rgba(223,233,255,"+a.toFixed(3)+")";
+        ctx.shadowBlur=6; ctx.shadowColor="rgba(0,0,0,0.9)";
+        const label = (n.name||n.id);
+        ctx.fillText(label.length>14?label.slice(0,13)+"…":label, lx, ly);
+        ctx.shadowBlur=0;
+      }
+    }
+
+    function drawCore(now,time){
+      const breathe=0.5+0.5*Math.sin(time*1.1);
+      const baseR=Math.min(W,H)*0.052;
+      const r=baseR*(1+0.06*breathe+coreFlare*0.45);
+      const energy=clamp(0.4+coreEnergy*0.8+coreFlare*0.7,0,2);
+
+      // big soft bloom
+      const g=ctx.createRadialGradient(CX,CY,0,CX,CY,r*8);
+      g.addColorStop(0,"rgba(39,232,255,"+(0.34*energy).toFixed(3)+")");
+      g.addColorStop(0.4,"rgba(80,150,255,"+(0.12*energy).toFixed(3)+")");
+      g.addColorStop(1,"rgba(39,232,255,0)");
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(CX,CY,r*8,0,TAU); ctx.fill();
+
+      // rotating energy rings
+      for(let i=0;i<3;i++){
+        const rr=r*(1.8+i*0.7);
+        const rot=time*(0.2+i*0.12)*(i%2?1:-1);
+        ctx.save();
+        ctx.strokeStyle="rgba("+(i%2?"255,61,240":"39,232,255")+","+(0.18+0.1*breathe).toFixed(3)+")";
+        ctx.lineWidth=1.2;
+        ctx.beginPath();
+        for(let a=0;a<TAU;a+=0.18){
+          const wob=1+0.06*Math.sin(a*6+rot*4);
+          const x=CX+Math.cos(a+rot)*rr*wob, y=CY+Math.sin(a+rot)*rr*wob;
+          a===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+        }
+        ctx.closePath(); ctx.stroke();
+        ctx.restore();
+      }
+
+      // core body
+      ctx.save();
+      ctx.shadowBlur=30+coreFlare*40; ctx.shadowColor="rgba(39,232,255,0.9)";
+      const cg=ctx.createRadialGradient(CX-r*0.3,CY-r*0.3,0,CX,CY,r);
+      cg.addColorStop(0,"#eafdff");
+      cg.addColorStop(0.5,"#27e8ff");
+      cg.addColorStop(1,"#0a6f9e");
+      ctx.fillStyle=cg;
+      ctx.beginPath(); ctx.arc(CX,CY,r,0,TAU); ctx.fill();
+      ctx.restore();
+
+      // flare ring on push
+      if(coreFlare>0.02){
+        ctx.strokeStyle="rgba(255,255,255,"+(coreFlare*0.5).toFixed(3)+")";
+        ctx.lineWidth=2;
+        ctx.beginPath(); ctx.arc(CX,CY,r+coreFlare*30,0,TAU); ctx.stroke();
+      }
+      // HUB label
+      ctx.font="800 11px "+getMono();
+      ctx.fillStyle="rgba(255,255,255,0.92)"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.shadowBlur=10; ctx.shadowColor="rgba(0,40,60,0.9)";
+      ctx.fillText("HUB",CX,CY);
+      ctx.shadowBlur=0;
+    }
+
+    function stepParticles(dt){
+      ctx.save();
+      ctx.globalCompositeOperation="lighter";
+      for(let i=particles.length-1;i>=0;i--){
+        const p=particles[i];
+        p.t += 0.018*p.speed*dt*(p.faint?1.3:1);
+        let x,y,done=false;
+        if(p.phase==="in"){
+          // from device toward core
+          const tt=easeInOutQuad(clamp(p.t,0,1));
+          x=lerp(p.from.x,CX,tt); y=lerp(p.from.y,CY,tt);
+          if(p.t>=1){ // arrived at core -> flare + begin out leg to share
+            coreFlare=Math.min(1.5,coreFlare+0.5);
+            const s=nodes.share.get(p.share);
+            p.phase="out"; p.t=0;
+            p.to = s?{x:s.x,y:s.y}:{x:CX+rand(-30,30),y:CY+R_SHARE};
+            p.from={x:CX,y:CY};
+            p.hue=308; // recolor to share/magenta on the way out
+          }
+        } else { // "out" or "out2"
+          const tt=easeInOutQuad(clamp(p.t,0,1));
+          x=lerp(p.from.x,p.to.x,tt); y=lerp(p.from.y,p.to.y,tt);
+          if(p.t>=1){
+            done=true;
+            if(p.phase==="out"){
+              // reached share -> pulse it + fan out to subscribers
+              const s=nodes.share.get(p.share);
+              if(s){ s.pulse=1; s.glow=Math.min(1,s.glow+0.6); }
+              fanOut(p.share);
+            }
+          }
+        }
+        // trail
+        p.trail.push({x,y}); if(p.trail.length>14) p.trail.shift();
+        const baseA=p.faint?0.25:0.9;
+        for(let j=0;j<p.trail.length;j++){
+          const tp=p.trail[j]; const a=(j/p.trail.length)*baseA;
+          const rad=(p.faint?1.4:2.6)*p.mag*(0.4+j/p.trail.length);
+          ctx.fillStyle="hsla("+p.hue+",100%,"+(p.faint?60:68)+"%,"+a.toFixed(3)+")";
+          ctx.beginPath(); ctx.arc(tp.x,tp.y,rad,0,TAU); ctx.fill();
+        }
+        // head
+        ctx.shadowBlur=p.faint?6:14; ctx.shadowColor="hsl("+p.hue+",100%,70%)";
+        ctx.fillStyle="rgba(255,255,255,"+(p.faint?0.6:0.95)+")";
+        ctx.beginPath(); ctx.arc(x,y,(p.faint?1.6:3.2)*p.mag,0,TAU); ctx.fill();
+        ctx.shadowBlur=0;
+        if(done){ particles.splice(i,1); state.flowsThisSec++; }
+      }
+      ctx.restore();
+    }
+
+    function stepRipples(dt){
+      ctx.save();
+      ctx.globalCompositeOperation="lighter";
+      for(let i=ripples.length-1;i>=0;i--){
+        const r=ripples[i];
+        r.r+=(r.ring?5.5:3.2)*dt*(r.max/120);
+        r.life-=0.018*dt;
+        if(r.life<=0||r.r>=r.max){ ripples.splice(i,1); continue; }
+        const a=clamp(r.life,0,1);
+        ctx.strokeStyle="hsla("+r.hue+",100%,65%,"+(a*0.5).toFixed(3)+")";
+        ctx.lineWidth=r.w;
+        ctx.beginPath(); ctx.arc(r.x,r.y,r.r,0,TAU); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    let _mono=null;
+    function getMono(){ if(_mono) return _mono;
+      _mono=getComputedStyle(document.body).getPropertyValue("--mono").trim()||"monospace"; return _mono; }
+
+    // remove devices/shares not in current set (called after state refresh)
+    function syncFromState(devices,shares){
+      const dIds=new Set(devices.map(d=>d.id));
+      const sNames=new Set(shares.map(s=>s.name));
+      for(const d of devices){ const n=ensureDevice(d.id,d.name,d.online); }
+      for(const s of shares){ ensureShare(s.name); }
+      // prune nodes that vanished (only ones originally from state, keep recent on-the-fly)
+      for(const [id,n] of nodes.device){
+        if(!dIds.has(id) && performance.now()-n.born>15000){ nodes.device.delete(id); }
+      }
+      for(const [name,n] of nodes.share){
+        if(!sNames.has(name) && performance.now()-n.born>15000){ nodes.share.delete(name); }
+      }
+      layout();
+    }
+
+    return { resize, frame:()=>requestAnimationFrame(frame),
+             pushFlow, joinBurst, ensureDevice, ensureShare, syncFromState,
+             count:()=>nodes.device.size+nodes.share.size,
+             flowsLastSec:()=>state.flowsLastSec };
+  })();
+
+  /* =====================================================================
+     SPARKLINES — tiny canvas charts, drawn by hand (no chart lib).
+     ===================================================================== */
+  const sparks={};
+  function Spark(id,color){
+    const cv=$(id); const ctx=cv.getContext("2d");
+    let w=0,h=0,dpr=Math.min(window.devicePixelRatio||1,2);
+    const data=[]; const MAX=40;
+    function size(){ const r=cv.getBoundingClientRect();
+      w=r.width||96; h=r.height||30; cv.width=w*dpr; cv.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
+    function push(v){ data.push(v); if(data.length>MAX) data.shift(); draw(); }
+    function set(arr){ data.length=0; for(const v of arr) data.push(v); if(data.length>MAX)data.splice(0,data.length-MAX); draw(); }
+    function draw(){
+      ctx.clearRect(0,0,w,h);
+      if(data.length<2) return;
+      let mn=Infinity,mx=-Infinity;
+      for(const v of data){ if(v<mn)mn=v; if(v>mx)mx=v; }
+      if(mx-mn<1e-9) mx=mn+1;
+      const pad=3;
+      const X=i=> pad + (i/(data.length-1))*(w-pad*2);
+      const Y=v=> h-pad - ((v-mn)/(mx-mn))*(h-pad*2);
+      // area fill
+      const grad=ctx.createLinearGradient(0,0,0,h);
+      grad.addColorStop(0,color+"55"); grad.addColorStop(1,color+"00");
+      ctx.beginPath(); ctx.moveTo(X(0),h);
+      for(let i=0;i<data.length;i++) ctx.lineTo(X(i),Y(data[i]));
+      ctx.lineTo(X(data.length-1),h); ctx.closePath();
+      ctx.fillStyle=grad; ctx.fill();
+      // line
+      ctx.beginPath();
+      for(let i=0;i<data.length;i++){ const x=X(i),y=Y(data[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+      ctx.lineWidth=1.6; ctx.strokeStyle=color; ctx.shadowBlur=6; ctx.shadowColor=color; ctx.stroke();
+      ctx.shadowBlur=0;
+      // head dot
+      const hx=X(data.length-1),hy=Y(data[data.length-1]);
+      ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(hx,hy,1.8,0,TAU); ctx.fill();
+    }
+    size();
+    return {push,set,size};
+  }
+
+  /* =====================================================================
+     METRIC TILES — animated number ticking + sparkline feed.
+     ===================================================================== */
+  const tickers={}; // id -> {cur, target, raf}
+  function tickTo(id, target, fmt){
+    fmt=fmt||(v=>String(Math.round(v)));
+    const el=$(id); if(!el) return;
+    let st=tickers[id]; if(!st){ st={cur:target}; tickers[id]=st; el.textContent=fmt(target); st.cur=target; return; }
+    st.target=target;
+    if(st.raf) return;
+    const step=()=>{
+      st.cur=lerp(st.cur,st.target,0.22);
+      if(Math.abs(st.cur-st.target)<0.5){ st.cur=st.target; el.textContent=fmt(st.target); st.raf=0; return; }
+      el.textContent=fmt(st.cur); st.raf=requestAnimationFrame(step);
+    };
+    st.raf=requestAnimationFrame(step);
+  }
+  function flashTile(el){ if(!el)return; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+
+  function initSparks(){
+    sparks.online=Spark("sp-online","#27e8ff");
+    sparks.shares=Spark("sp-shares","#ff3df0");
+    sparks.snaps =Spark("sp-snaps","#b6ff3a");
+    sparks.chunks=Spark("sp-chunks","#ffb23d");
+    sparks.bytes =Spark("sp-bytes","#27e8ff");
+    sparks.prate =Spark("sp-prate","#b6ff3a");
+    sparks.brate =Spark("sp-brate","#ff3df0");
+  }
+
+  function renderTotals(prev){
+    const T=state.totals;
+    tickTo("t-online",T.online);
+    tickTo("t-devices",T.devices);
+    tickTo("t-shares",T.shares);
+    tickTo("t-snaps",T.snapshots);
+    tickTo("t-chunks",T.chunks);
+    const [bv,bu]=humanBytes(T.bytes);
+    tickTo("t-bytes",parseFloat(bv),v=> (v>=100?v.toFixed(0):v.toFixed(v>=10?1:2)));
+    $("t-bytes-u").textContent=bu;
+    $("t-online-sub").textContent = T.online>0 ? (T.online+" peer"+(T.online>1?"s":"")+" live") : "awaiting peers";
+
+    if(prev){
+      if(T.snapshots>prev.snapshots) flashTile($("t-snaps").closest(".tile"));
+      if(T.chunks>prev.chunks) flashTile($("t-chunks").closest(".tile"));
+      if(T.shares>prev.shares) flashTile($("t-shares").closest(".tile"));
+    }
+  }
+
+  // recompute rolling rates every second from event windows
+  function rateLoop(){
+    const now=Date.now(), cut=now-60000;
+    while(state.pushTimes.length && state.pushTimes[0]<cut) state.pushTimes.shift();
+    while(state.pushBytes.length && state.pushBytes[0][0]<cut) state.pushBytes.shift();
+    while(state.eventsForTput.length && state.eventsForTput[0]<cut) state.eventsForTput.shift();
+
+    const prate=state.pushTimes.length; // pushes in last 60s == per-min
+    const bsum=state.pushBytes.reduce((a,b)=>a+b[1],0);
+    tickTo("t-prate",prate);
+    const [brv,bru]=humanBytes(bsum);
+    tickTo("t-brate",parseFloat(brv),v=> (v>=100?v.toFixed(0):v.toFixed(v>=10?1:2)));
+    $("t-brate-u").textContent=bru+"/min";
+    $("m-tput").textContent=state.eventsForTput.length;
+
+    sparks.prate.push(prate);
+    sparks.brate.push(bsum);
+    sparks.online.push(state.totals.online);
+    sparks.shares.push(state.totals.shares);
+    sparks.snaps.push(state.totals.snapshots);
+    sparks.chunks.push(state.totals.chunks);
+    sparks.bytes.push(state.totals.bytes);
+
+    // stage stat line
+    $("stage-stat").textContent = flow.count()+" nodes · "+flow.flowsLastSec()+" flows/s";
+    setTimeout(rateLoop,1000);
+  }
+
+  // uptime ticking from base + elapsed
+  function uptimeLoop(){
+    const up=state.baseUptime + (Date.now()-state.baseUptimeAt)/1000;
+    $("m-uptime").textContent=fmtUptime(up);
+    setTimeout(uptimeLoop,1000);
+  }
+  function fmtUptime(s){
+    s=Math.max(0,s|0);
+    const d=(s/86400)|0; s-=d*86400;
+    const h=(s/3600)|0; s-=h*3600;
+    const m=(s/60)|0; const ss=s-m*60;
+    if(d>0) return d+"d "+h+"h "+m+"m";
+    if(h>0) return h+"h "+m+"m "+ss+"s";
+    if(m>0) return m+"m "+ss+"s";
+    return ss+"s";
+  }
+
+  /* =====================================================================
+     ACTIVITY FEED — newest on top, capped, relative timestamps.
+     ===================================================================== */
+  const FEED_MAX=50;
+  const feedRows=$("feed-rows");
+  const feedItems=[]; // {el, ts}
+  function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+  function addFeed(ev){
+    const fe=$("feed-empty"); if(fe) fe.remove();
+    const div=document.createElement("div");
+    let cls="row", ic="•", msg="";
+    const who='<span class="who">'+escapeHtml(ev.device_name||ev.device||"?")+'</span>';
+    const tgt='<span class="tgt">'+escapeHtml(ev.share||"")+'</span>';
+    let meta="";
+    if(ev.type==="push"){
+      cls+=ev.new_head?" head":" push"; ic=ev.new_head?"✦":"↑";
+      const [bv,bu]=humanBytes(ev.bytes||0);
+      msg=who+' pushed <b>'+(ev.chunks||0)+'</b> chunk'+((ev.chunks||0)===1?"":"s")+' <span style="color:var(--ink-dim)">→</span> '+tgt;
+      meta=bv+" "+bu+(ev.snapshot?" · "+String(ev.snapshot).slice(0,8):"")+(ev.new_head?" · new head":"");
+    } else if(ev.type==="join"){
+      cls+=" join"; ic="✨";
+      msg=who+' joined the fabric';
+      meta=ev.device? String(ev.device).slice(0,8):"";
+    } else if(ev.type==="leave"){
+      cls+=" leave"; ic="⏏";
+      msg=who+' went offline';
+    } else if(ev.type==="revoke"){
+      cls+=" revoke"; ic="⊘";
+      msg=who+' was revoked';
+    } else {
+      cls+=" push"; ic="•";
+      msg=who+' '+escapeHtml(ev.type||"event")+(ev.share?(' <span style="color:var(--ink-dim)">→</span> '+tgt):"");
+    }
+    div.className=cls;
+    div.innerHTML='<div class="ic">'+ic+'</div>'+
+      '<div class="body"><div class="msg">'+msg+'</div>'+(meta?'<div class="meta">'+escapeHtml(meta)+'</div>':'')+'</div>'+
+      '<div class="ago" data-ts="'+ev.ts+'">'+relTime(ev.ts)+'</div>';
+    feedRows.insertBefore(div,feedRows.firstChild);
+    feedItems.unshift({el:div,ts:ev.ts});
+    while(feedItems.length>FEED_MAX){ const last=feedItems.pop(); last.el.remove(); }
+  }
+  // refresh relative timestamps
+  setInterval(()=>{ for(const it of feedItems){ const a=it.el.querySelector(".ago"); if(a) a.textContent=relTime(it.ts); } },1000);
+
+  /* =====================================================================
+     EVENT HANDLING — unify push/join into viz + feed + metrics.
+     ===================================================================== */
+  function handleEvent(ev){
+    if(!ev||!ev.type) return;
+    const now=Date.now();
+    state.eventsForTput.push(ev.ts||now);
+
+    // resolve / lazily create nodes
+    if(ev.device){
+      flow.ensureDevice(ev.device, ev.device_name||ev.device, true);
+    }
+    if(ev.type==="push"){
+      if(ev.share) flow.ensureShare(ev.share);
+      flow.pushFlow(ev.device, ev.share, ev.bytes||0);
+      state.pushTimes.push(ev.ts||now);
+      state.pushBytes.push([ev.ts||now, ev.bytes||0]);
+      // optimistic local total bumps (server state will reconcile on next fetch)
+      state.totals.chunks += (ev.chunks||0);
+      state.totals.bytes  += (ev.bytes||0);
+      if(ev.new_head) state.totals.snapshots += 1;
+      renderTotals();
+    } else if(ev.type==="join"){
+      flow.joinBurst(ev.device, ev.device_name||ev.device);
+    }
+    addFeed(ev);
+    hideEmpty();
+  }
+  let _emptyHidden=false;
+  function hideEmpty(){ if(_emptyHidden)return; const e=$("empty"); if(e){ e.style.opacity="0"; setTimeout(()=>e.remove(),700);} _emptyHidden=true; }
+
+  /* =====================================================================
+     CONNECTION INDICATOR
+     ===================================================================== */
+  function setConn(mode){ // 'live' | 'recon' | 'demo' | 'connecting'
+    const c=$("conn"); c.className="conn"+(mode==="live"?" live":mode==="recon"?" recon":mode==="demo"?" demo":"");
+    $("conn-label").textContent = mode==="live"?"live stream":mode==="recon"?"reconnecting":mode==="demo"?"demo mode":"connecting";
+  }
+
+  /* =====================================================================
+     DATA LAYER — /api/state snapshot + /api/events SSE (with reconnect).
+     ===================================================================== */
+  function applyState(s){
+    const prev={...state.totals};
+    if(s.hub){ state.hub=s.hub; $("m-version").textContent=s.hub.version||"—";
+      state.baseUptime=s.hub.uptime_s||0; state.baseUptimeAt=Date.now(); }
+    if(s.totals){ state.totals={...state.totals, ...s.totals}; }
+    if(Array.isArray(s.devices)){ state.devices=s.devices;
+      state.deviceById=new Map(s.devices.map(d=>[d.id,d])); }
+    if(Array.isArray(s.shares)){ state.shares=s.shares;
+      state.shareByName=new Map(s.shares.map(x=>[x.name,x])); }
+    flow.syncFromState(state.devices,state.shares);
+    renderTotals(prev);
+    if(state.totals.devices>0 || state.totals.shares>0) hideEmpty();
+  }
+
+  async function fetchState(){
+    try{
+      const r=await fetch("/api/state",{cache:"no-store"});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      applyState(await r.json());
+      return true;
+    }catch(e){ return false; }
+  }
+
+  let es=null, reconTimer=null;
+  function connectSSE(){
+    try{
+      es=new EventSource("/api/events");
+      es.onopen=()=>{ setConn("live"); };
+      es.onmessage=(m)=>{
+        setConn("live");
+        try{ handleEvent(JSON.parse(m.data)); }catch(e){/* tolerate malformed lines */}
+      };
+      es.onerror=()=>{
+        // EventSource auto-reconnects; reflect the visual state + safety re-open.
+        setConn("recon");
+        if(es && es.readyState===2){ // CLOSED — manually retry
+          try{ es.close(); }catch(_){}
+          clearTimeout(reconTimer);
+          reconTimer=setTimeout(connectSSE, 2500);
+        }
+      };
+    }catch(e){ setConn("recon"); clearTimeout(reconTimer); reconTimer=setTimeout(connectSSE,2500); }
+  }
+
+  async function liveBoot(){
+    setConn("connecting");
+    const ok=await fetchState();
+    if(!ok){ setConn("recon"); }
+    connectSSE();
+    setInterval(fetchState, 10000); // refresh snapshot ~every 10s
+  }
+
+  /* =====================================================================
+     DEMO MODE — synthesize a realistic stream, fully client-side.
+     Clearly separated; OFF unless ?demo=1. Works over file:// too.
+     ===================================================================== */
+  function demoBoot(){
+    setConn("demo");
+    const NAMES=["hueb","wick","newpi","forge","atlas","nimbus","quartz","relay","cobalt","vesper","onyx","drift","pixel","lumen"];
+    const SHARES=["proj","dotfiles","photos","notes","infra","blog","www","game-dev"];
+    const PRINCS=["owner","alice","bob"];
+    let devs=[], shrs=[], idc=0;
+
+    function mkDev(name){ return {id:(0x100000+(idc++)*0x911 ).toString(16).slice(0,6), name,
+      last_seen:Math.floor(Date.now()/1000), online:Math.random()>0.25, principal:pick(PRINCS), revoked:false}; }
+    function mkShare(name){ return {name, head:(Math.random()*0xffffffff>>>0).toString(16).padStart(8,"0"),
+      snapshots:(Math.random()*8|0)+1, members:(Math.random()*4|0)+1, acl_mode:Math.random()>.5?"legacy":"acl",
+      updated_at:Math.floor(Date.now()/1000)}; }
+
+    // seed a believable fabric
+    const seedDevN=6, seedShareN=5;
+    for(let i=0;i<seedDevN;i++) devs.push(mkDev(NAMES[i]));
+    for(let i=0;i<seedShareN;i++) shrs.push(mkShare(SHARES[i]));
+
+    function totals(){
+      const online=devs.filter(d=>d.online).length;
+      const snaps=shrs.reduce((a,s)=>a+s.snapshots,0);
+      return {devices:devs.length, online, shares:shrs.length,
+        snapshots:snaps, chunks:state.totals.chunks||snaps*4,
+        bytes:state.totals.bytes|| (snaps*420000+1234567)};
+    }
+    function pushState(){
+      applyState({hub:{version:"1.2.0-demo",uptime_s: 3600*7+812 + (Date.now()-state.startedAt)/1000},
+        totals:totals(), devices:devs, shares:shrs});
+    }
+    pushState();
+    setInterval(pushState, 10000); // mirror the real 10s snapshot cadence
+
+    // event synthesizer — weighted toward pushes, occasional joins
+    function tick(){
+      const r=Math.random();
+      if(r<0.12 && devs.length<NAMES.length){
+        // join a new device
+        const used=new Set(devs.map(d=>d.name));
+        const name=NAMES.find(n=>!used.has(n))||("node"+(idc));
+        const d=mkDev(name); d.online=true; devs.push(d);
+        handleEvent({ts:Date.now(),type:"join",device:d.id,device_name:d.name,share:"",bytes:0,chunks:0,new_head:false});
+      } else {
+        // a push
+        const online=devs.filter(d=>d.online); const d=pick(online.length?online:devs);
+        const s=pick(shrs);
+        const chunks=1+(Math.random()*6|0);
+        const bytes=Math.round(rand(400, 4_500_000) * (Math.random()<0.3?rand(1,6):1));
+        const newHead=Math.random()<0.6;
+        if(newHead){ s.snapshots++; s.head=(Math.random()*0xffffffff>>>0).toString(16).padStart(8,"0"); s.updated_at=Math.floor(Date.now()/1000); }
+        handleEvent({ts:Date.now(),type:"push",device:d.id,device_name:d.name,share:s.name,
+          bytes,chunks,snapshot:(Math.random()*0xffffff>>>0).toString(16).padStart(6,"0"),new_head:newHead});
+      }
+      // occasionally flip a device online/offline for life
+      if(Math.random()<0.06){ const d=pick(devs); d.online=!d.online; }
+      setTimeout(tick, rand(420, 1700));
+    }
+    // a little opening burst so the first screenshot is alive
+    setTimeout(tick, 350);
+    setTimeout(()=>{ for(let i=0;i<3;i++) setTimeout(tick, i*180); }, 600);
+  }
+
+  /* =====================================================================
+     BOOT
+     ===================================================================== */
+  function boot(){
+    initSparks();
+    flow.resize();
+    flow.frame();
+    rateLoop();
+    uptimeLoop();
+    window.addEventListener("resize", ()=>{
+      flow.resize();
+      for(const k in sparks) sparks[k].size();
+    });
+    if(DEMO) demoBoot(); else liveBoot();
+  }
+  // ensure layout has real dimensions before sizing canvases
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",()=>requestAnimationFrame(boot));
+  else requestAnimationFrame(boot);
+})();
+</script>
 </body>
+</html>

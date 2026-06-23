@@ -1,5 +1,6 @@
 .devbox/
 .claude/
+.playwright-mcp/
 blobs/
 *.pre-v2.bak
 *.db
