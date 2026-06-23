@@ -487,6 +487,21 @@ flowchart LR
 | ✅ | **M6 — Versioning** 🕰️ | `devbox log` (full snapshot ids) / `restore` (revert any file) / hub `gc` — fleet-verified |
 | ✅ | **M6.5 — Deploy** 🚀 | `devbox deploy <share> <snapshot>` — apply a snapshot without pushing, `[pinned]` mount; fleet-verified blue/green |
 | ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, **60s rescan fallback** (survives dead/limited inotify watchers — PRD risk #1), share-name guard, release builds — fleet-verified |
+| ✅ | **M7.5 — Audit hardening** 🔐 | adversarial security/data-loss audit + fixes: blob-hash **path-traversal** blocked, **download blob-integrity** check, manifest-path **containment**, secret-guard **case-insensitive** + more patterns, **never-clobber** ignored/guarded files, **GC made safe** vs cross-share refcount undercount — all with regression tests, race-clean, fleet-verified |
+
+<details>
+<summary>🔐 <b>hardening still deferred</b> (single-owner v1 threat model)</summary>
+
+The post-v1 audit fixed every data-loss + arbitrary-file path; these are the **lower-risk** items left, safe to defer because v1 is **single-owner / all devices trusted** (PRD §2):
+
+- 🔢 **Per-`(share,id)` snapshot refcounts** — the GC is already ground-truth-safe; this is the cleaner accounting (needs a live-hub schema migration).
+- 🔑 **Read-side ACL + deny-by-default writes** — only matters once shares span *multiple owners* (v2 teams); today every enrolled device is yours.
+- 🪪 **Join proof-of-possession** (sign a challenge with the device key).
+- 🚪 **Request size limits + server timeouts** (DoS hardening; hub sits behind NPM on the LAN).
+- 💽 **fsync durability** on atomic writes (power-loss safety).
+- 🆔 **pidfile PID-reuse guard**, conflict-copy on explicit `restore`/`deploy`.
+
+</details>
 
 <details>
 <summary>🔮 <b>v2 backlog</b></summary>
