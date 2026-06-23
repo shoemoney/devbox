@@ -168,8 +168,21 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 // snapshot doesn't contain is deleted. A bad onlyPath (not in the snapshot) errors
 // without touching the tree.
 func Restore(c *transport.Client, root, share, subpath, snapshot, onlyPath, host string, now int64, ig *ignore.Matcher, guard *secret.Guard, hk *hooks.Runner) (Result, error) {
+	// Never lose a byte, even on a deliberate revert: capture any uncommitted local
+	// edit this restore would overwrite or delete, then drop it back as a .conflict
+	// copy once the snapshot is applied (a clean restore — no uncommitted edits —
+	// captures nothing and reproduces the snapshot exactly).
+	endangered, err := captureUncommitted(c, root, share, subpath, snapshot, onlyPath, ig, guard)
+	if err != nil {
+		return Result{}, err
+	}
 	if _, err := applySnapshot(c, root, subpath, snapshot, onlyPath, ig, guard); err != nil {
 		return Result{}, err
+	}
+	for path, data := range endangered {
+		if _, err := writeConflictCopy(root, path, data, host, now); err != nil {
+			return Result{}, err
+		}
 	}
 	head, err := c.Head(share)
 	if err != nil {
@@ -398,30 +411,111 @@ func safeJoin(root, relPath string) (string, error) {
 	return filepath.Join(root, clean), nil
 }
 
-// preserveAsConflict renames the current local file at relPath to a sibling named
-// path.conflict-<host>-<ts>.ext, returning the conflict copy's relative path.
-func preserveAsConflict(root, relPath, host string, ts int64) (string, error) {
+// freeConflictName probes for an unused path.conflict-<host>-<ts>.ext sibling of
+// relPath and returns its relative path (ts is nanoseconds, so collisions are
+// already rare; the counter is belt-and-suspenders against overwriting a prior copy).
+func freeConflictName(root, relPath, host string, ts int64) (string, error) {
 	ext := filepath.Ext(relPath)
 	stem := strings.TrimSuffix(relPath, ext)
-	src := filepath.Join(root, filepath.FromSlash(relPath))
-	// Probe for a free name (ts is nanoseconds, so collisions are already rare;
-	// the counter is belt-and-suspenders against ever overwriting a prior copy).
 	for n := 0; ; n++ {
 		cp := fmt.Sprintf("%s.conflict-%s-%d%s", stem, host, ts, ext)
 		if n > 0 {
 			cp = fmt.Sprintf("%s.conflict-%s-%d-%d%s", stem, host, ts, n, ext)
 		}
-		dst := filepath.Join(root, filepath.FromSlash(cp))
-		if _, err := os.Stat(dst); err == nil {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(cp))); err == nil {
 			continue // taken
 		} else if !os.IsNotExist(err) {
 			return "", err
 		}
-		if err := os.Rename(src, dst); err != nil {
-			return "", err
-		}
 		return cp, nil
 	}
+}
+
+// preserveAsConflict renames the current local file at relPath to a sibling named
+// path.conflict-<host>-<ts>.ext, returning the conflict copy's relative path.
+func preserveAsConflict(root, relPath, host string, ts int64) (string, error) {
+	cp, err := freeConflictName(root, relPath, host, ts)
+	if err != nil {
+		return "", err
+	}
+	src := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.Rename(src, filepath.Join(root, filepath.FromSlash(cp))); err != nil {
+		return "", err
+	}
+	return cp, nil
+}
+
+// writeConflictCopy writes captured bytes (a file's pre-restore local content) to
+// a path.conflict-<host>-<ts> sibling. Restore uses this to drop an uncommitted
+// local edit beside the file AFTER the restore has overwritten/deleted the
+// original — so the never-lose-a-byte guarantee holds even for a deliberate revert.
+func writeConflictCopy(root, relPath string, data []byte, host string, ts int64) (string, error) {
+	cp, err := freeConflictName(root, relPath, host, ts)
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(root, filepath.FromSlash(cp))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(dst, data, 0o644); err != nil {
+		return "", err
+	}
+	return cp, nil
+}
+
+// captureUncommitted reads the on-disk bytes of any local file an explicit restore
+// is about to LOSE: one whose content differs from BOTH the snapshot being restored
+// AND the current hub head. A file equal to the snapshot isn't changing; a file
+// equal to head is safe in history. Everything else is an uncommitted local edit
+// (or a file new since head) that restore would silently overwrite or delete — so
+// grab its bytes now and (after restore applies) drop them as a .conflict copy.
+// Honors onlyPath. Same ignore/secret filtering as the apply, so we never touch a
+// .devignore'd or guarded file.
+func captureUncommitted(c *transport.Client, root, share, subpath, snapshot, onlyPath string, ig *ignore.Matcher, guard *secret.Guard) (map[string][]byte, error) {
+	tgt, err := fetchManifest(c, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	target := indexEntries(filterStrip(tgt, subpath))
+	headIdx := map[string]manifest.Entry{}
+	head, err := c.Head(share)
+	if err != nil {
+		return nil, err
+	}
+	if head != "" {
+		hm, err := fetchManifest(c, head)
+		if err != nil {
+			return nil, err
+		}
+		headIdx = indexEntries(filterStrip(hm, subpath))
+	}
+	local, _, err := manifest.Build(root, ig, guard)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]byte{}
+	for _, oe := range local.Entries {
+		if onlyPath != "" && oe.Path != onlyPath {
+			continue
+		}
+		if te, ok := target[oe.Path]; ok && manifest.SameContent(oe, te) {
+			continue // unchanged by the restore
+		}
+		if he, ok := headIdx[oe.Path]; ok && manifest.SameContent(oe, he) {
+			continue // committed content, recoverable from history
+		}
+		dst, err := safeJoin(root, oe.Path)
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(dst)
+		if err != nil {
+			continue // already gone / unreadable; nothing to preserve
+		}
+		out[oe.Path] = data
+	}
+	return out, nil
 }
 
 // atomicWrite writes data to path via a temp file + rename (atomic on POSIX and

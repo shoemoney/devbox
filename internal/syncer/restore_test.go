@@ -95,6 +95,62 @@ func TestRestoreWholeTree(t *testing.T) {
 	}
 }
 
+// TestRestorePreservesUncommittedEdit is the never-lose-a-byte guarantee on a
+// deliberate revert: an UNCOMMITTED local edit (differs from both the snapshot
+// being restored and the hub head) survives as a .conflict copy, while the file
+// itself reverts. A clean restore (TestRestoreWholeTree) preserves nothing.
+func TestRestorePreservesUncommittedEdit(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := blobstore.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(hub.NewServer(db, store).Handler())
+	defer srv.Close()
+
+	guard, _ := secret.New(nil)
+	ig, _ := LoadIgnore(t.TempDir())
+	c := joinDevice(t, db, srv.URL, "alice")
+	if err := c.Publish("proj"); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+
+	writeFile(t, root, "main.go", "v1\n")
+	snap1, err := Push(c, root, "proj", "", ig, guard, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "main.go", "v2\n")
+	if _, err := Push(c, root, "proj", "", ig, guard, snap1.Head, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uncommitted local edit: v3 on disk, never pushed (head is still v2).
+	writeFile(t, root, "main.go", "v3 UNCOMMITTED\n")
+
+	if _, err := Restore(c, root, "proj", "", snap1.Snapshot, "", "host", 1, ig, guard, nil); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	// The file reverted to v1...
+	if got := readFile(t, root, "main.go"); got != "v1\n" {
+		t.Fatalf("main.go = %q, want v1", got)
+	}
+	// ...and the uncommitted v3 survives as a conflict copy.
+	matches, _ := filepath.Glob(filepath.Join(root, "main.conflict-*"))
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one conflict copy, got %v", matches)
+	}
+	if got, _ := os.ReadFile(matches[0]); string(got) != "v3 UNCOMMITTED\n" {
+		t.Fatalf("conflict copy = %q, want the uncommitted v3", got)
+	}
+}
+
 // TestRestoreSinglePath brings back just one file to its snapshot content without
 // touching the rest of the tree, and errors cleanly on a path not in the snapshot.
 func TestRestoreSinglePath(t *testing.T) {
