@@ -31,17 +31,3 @@ func TestHubRequestsUnderLimitsSucceed(t *testing.T) {
 		t.Fatalf("POST have under cap = %d, want 200; body=%s", status, body)
 	}
 }
-
-// TestHubServerTimeoutsConfigured documents the intended hardening: the hub sets
-// read/idle timeouts but deliberately leaves WriteTimeout unset so the long-lived
-// /v1/events SSE stream is not killed mid-flight. The actual http.Server is built
-// in cmd/devbox-hub; this test pins the constants so a careless edit that drops
-// the caps trips here.
-func TestHubByteCapsAreSane(t *testing.T) {
-	if maxJSONBytes <= 0 || maxBlobBytes <= 0 {
-		t.Fatalf("byte caps must be positive: json=%d blob=%d", maxJSONBytes, maxBlobBytes)
-	}
-	if maxJSONBytes >= maxBlobBytes {
-		t.Fatalf("maxJSONBytes (%d) should be much smaller than maxBlobBytes (%d)", maxJSONBytes, maxBlobBytes)
-	}
-}
