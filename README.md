@@ -49,7 +49,7 @@
 > | M7 — Hardening: `devbox doctor`, reconnect/backoff, rescan fallback, name-clash, release builds | ✅ done — **doctor/stop/hooks + share-name guard + dead-watcher rescan fleet-verified** 🛡️ |
 > | M7.5 — Adversarial security/data-loss audit + fixes (path-traversal, blob integrity, never-clobber, safe GC) | ✅ done — **26 findings, all promise-breakers fixed, race-clean** 🔐 |
 > | M7.6 — Hardening: fsync durability · DoS caps + timeouts · pidfile PID-reuse guard · join proof-of-possession | ✅ done — fleet-verified on arm64 🛡️ |
-> | 🔮 **M8 — v2 Foundations**: migration runner · per-`(share,id)` snapshots · control socket + `pause`/`resume` · principals/roles + write enforcement | 🔨 in progress — **migration runner, control socket & M8a role enforcement shipped; both migrations verified on a copy of the real hub DB** 🏗️ |
+> | 🔮 **M8 — v2 Foundations**: migration runner · per-`(share,id)` snapshots · control socket + `pause`/`resume` · **M8a teams** (principals/roles/invites + write enforcement) | 🔨 in progress — **M8a complete & cross-machine fleet-verified** (Pi `.13` owner invited an editor, Pi `.15` redeemed & pushed); 3 migrations verified on a copy of the real hub DB 🏗️👥 |
 
 ---
 
@@ -329,6 +329,9 @@ container automatically. 🪄
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
 | `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer |
 | `devbox pause` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket (M8) |
+| `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
+| `devbox members <share>` | 👥 Show who can access a share, or "legacy share" (M8a) |
+| `devbox-hub member set/rm/list` · `principal` | 🛡️ Hub-side role admin (M8a) |
 | `devbox peers` | 🌐 *Planned — needs a hub peers endpoint (M10)* |
 
 </details>
@@ -534,7 +537,7 @@ flowchart LR
 | ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, **60s rescan fallback** (survives dead/limited inotify watchers — PRD risk #1), share-name guard, release builds — fleet-verified |
 | ✅ | **M7.5 — Audit hardening** 🔐 | adversarial security/data-loss audit + fixes: blob-hash **path-traversal** blocked, **download blob-integrity** check, manifest-path **containment**, secret-guard **case-insensitive** + more patterns, **never-clobber** ignored/guarded files, **GC made safe** vs cross-share refcount undercount — all with regression tests, race-clean, fleet-verified |
 | ✅ | **M7.6 — Hardening complete** 🛡️ | 💽 **fsync durability** on atomic writes (power-loss safe), 🚪 **request size caps + server timeouts** (DoS), 🆔 **pidfile PID-reuse guard** (start-time token), 🪪 **join proof-of-possession** (ed25519 signature, token not burned on a bad request) — fanned out to parallel worktree agents, regression-tested, race-clean, fleet-verified |
-| 🔨 | **M8 — v2 Foundations** 🏗️ | 🔑 **schema migration runner** (`PRAGMA user_version`, transactional, `VACUUM INTO` backup, refuses a newer DB) · 🔢 **per-`(share,id)` snapshots** (fixes the cross-share refcount undercount; GC + head-backfill reworked) · 🎛️ **daemon control socket** (Unix socket, HTTP/1.1, `0600`) wiring `devbox pause`/`resume` + live-socket-aware `status` · 👥 **M8a: principals + per-share roles + write enforcement** (`devbox-hub member`/`principal`; legacy shares = v1, first grant flips to deny-by-default; role≥editor AND the writable clamp). **Both migrations verified on a copy of the real `.10` hub DB** (counts preserved, 3 legacy heads repaired, chains 0→1→2). 👀 **read side: `GET /v1/members` + `devbox members <share>`**. **Next in M8:** device-facing invites with privilege attenuation (M8a cont.), conflict sidecar + `restore`/`deploy` conflict-copy (M8-3) |
+| 🔨 | **M8 — v2 Foundations** 🏗️ | 🔑 **schema migration runner** (`PRAGMA user_version`, transactional, `VACUUM INTO` backup, refuses a newer DB) · 🔢 **per-`(share,id)` snapshots** (fixes the cross-share refcount undercount; GC + head-backfill reworked) · 🎛️ **daemon control socket** (Unix socket, HTTP/1.1, `0600`) wiring `devbox pause`/`resume` + live-socket-aware `status` · 👥 **M8a: principals + per-share roles + write enforcement** (`devbox-hub member`/`principal`; legacy shares = v1, first grant flips to deny-by-default; role≥editor AND the writable clamp). **Both migrations verified on a copy of the real `.10` hub DB** (counts preserved, 3 legacy heads repaired, chains 0→1→2). 👀 read side (`GET /v1/members` + `devbox members`) · ✉️ **device-facing invites** (`POST /v1/invite` + `devbox invite`, privilege **attenuation** server-enforced via pure `meta.MayGrant`, self-seed on the legacy→explicit flip) — **cross-machine fleet-verified on arm64 Pis**. **Next in M8:** conflict sidecar + `restore`/`deploy` conflict-copy (M8-3, deferred — needs base-awareness); read-side ACL gating is M9 |
 
 <details>
 <summary>🔮 <b>still ahead in M8 / genuinely v2</b></summary>
