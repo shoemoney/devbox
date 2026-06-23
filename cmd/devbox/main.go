@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -662,7 +661,13 @@ func stopCmd() *cobra.Command {
 			}
 			pid, ok := runningPid(dir)
 			if !ok {
-				removePid(dir) // clean up a stale pidfile if present
+				// A pidfile we couldn't validate as our live daemon (gone, or a
+				// recycled PID now belonging to some other process) is stale —
+				// drop it rather than risk SIGTERMing an unrelated process.
+				if _, exists := os.Stat(pidPath(dir)); exists == nil {
+					removePid(dir)
+					return fmt.Errorf("no running daemon (removed stale pidfile)")
+				}
 				return fmt.Errorf("no running daemon")
 			}
 			p, err := os.FindProcess(pid)
@@ -676,64 +681,6 @@ func stopCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// --- pidfile: lets `devbox stop` find a running `devbox start` ---
-
-func pidPath(dir string) string { return filepath.Join(dir, "daemon.pid") }
-
-// writePid atomically claims the pidfile via O_EXCL so two `devbox start`
-// invocations can't both think they're the only daemon. If the file already
-// exists it arbitrates: a live pid means refuse; a stale pid (crashed daemon)
-// is removed and the claim retried.
-func writePid(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	for {
-		f, err := os.OpenFile(pidPath(dir), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, werr := f.WriteString(strconv.Itoa(os.Getpid()))
-			if cerr := f.Close(); werr == nil {
-				werr = cerr
-			}
-			return werr
-		}
-		if !os.IsExist(err) {
-			return err
-		}
-		if pid, ok := runningPid(dir); ok {
-			return fmt.Errorf("daemon already running (pid %d) — run: devbox stop", pid)
-		}
-		if rerr := os.Remove(pidPath(dir)); rerr != nil && !os.IsNotExist(rerr) {
-			return rerr
-		}
-		// Stale pidfile removed; loop retries the exclusive create.
-	}
-}
-
-func removePid(dir string) { _ = os.Remove(pidPath(dir)) }
-
-// runningPid reports the pid in the pidfile, and whether that process is alive.
-// A stale pidfile (process gone) returns ok=false.
-func runningPid(dir string) (int, bool) {
-	b, err := os.ReadFile(pidPath(dir))
-	if err != nil {
-		return 0, false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return 0, false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return 0, false
-	}
-	// On unix signal 0 tests liveness without delivering a signal.
-	if err := p.Signal(syscall.Signal(0)); err != nil {
-		return 0, false
-	}
-	return pid, true
 }
 
 func doctorCmd() *cobra.Command {
