@@ -255,8 +255,8 @@ func TestUnreferencedChunks(t *testing.T) {
 		t.Fatalf("unreferenced = %v, want [h2]", un)
 	}
 
-	if err := db.DeleteChunkRow("h2"); err != nil {
-		t.Fatal(err)
+	if deleted, err := db.DeleteChunkRow("h2"); err != nil || !deleted {
+		t.Fatalf("DeleteChunkRow(h2) = %v, %v; want true, nil", deleted, err)
 	}
 	if rc, _ := db.ChunkRefcount("h2"); rc != 0 {
 		t.Fatalf("h2 should be gone, refcount lookup = %d", rc)

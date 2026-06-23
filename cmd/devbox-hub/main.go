@@ -186,48 +186,114 @@ func gcCmd() *cobra.Command {
 	return cmd
 }
 
-// runGC prunes deletable snapshots (keeping the head + `keep` newest per share),
-// then deletes any chunk that lost its last reference. It returns how many
-// snapshots and chunks were removed. Deleting an already-absent blob is fine —
-// the metadata is the source of truth.
+// runGC prunes deletable snapshots (keeping the head + `keep` newest per share)
+// and sweeps unreachable chunks. It is mark-and-sweep from every share's live
+// snapshots as roots: nothing reachable from a kept snapshot is ever deleted,
+// regardless of refcounts. That makes GC safe even when refcounts are off — e.g.
+// content-addressed snapshot ids are shared across shares, so a naive per-share
+// refcount can undercount a chunk that two share heads both need.
 func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err error) {
 	shares, err := db.ShareNames()
 	if err != nil {
 		return 0, 0, err
 	}
+	heads, err := db.Heads()
+	if err != nil {
+		return 0, 0, err
+	}
+	headSet := map[string]bool{}
+	for _, h := range heads {
+		headSet[h] = true
+	}
+
+	// Partition snapshots into kept vs prunable. A snapshot is prunable only if
+	// it's deletable for its share AND not the head of ANY share (a shared content
+	// id may be one share's stale snapshot but another's live head — never prune).
+	keptSnaps := map[string]bool{}
+	var prunable []string
 	for _, share := range shares {
-		ids, err := db.DeletableSnapshots(share, keep)
+		del, err := db.DeletableSnapshots(share, keep)
+		if err != nil {
+			return 0, 0, err
+		}
+		delSet := map[string]bool{}
+		for _, id := range del {
+			delSet[id] = true
+		}
+		ids, err := db.SnapshotIDs(share)
 		if err != nil {
 			return 0, 0, err
 		}
 		for _, id := range ids {
-			hashes, err := manifestChunks(store, id)
-			if err != nil {
-				return 0, 0, err
+			if delSet[id] && !headSet[id] {
+				prunable = append(prunable, id)
+			} else {
+				keptSnaps[id] = true
 			}
-			if err := db.DeleteSnapshot(id, hashes); err != nil {
-				return 0, 0, err
-			}
-			if err := store.Delete(id); err != nil && err != blobstore.ErrNotFound {
-				return 0, 0, err
-			}
-			snaps++
 		}
 	}
 
+	// Ground truth: everything reachable from a kept snapshot survives. Reach a
+	// missing manifest? Nothing is reachable through it — skip, don't abort.
+	reachable := map[string]bool{}
+	for id := range keptSnaps {
+		reachable[id] = true // the manifest blob itself is live
+		hashes, err := manifestChunks(store, id)
+		if err == blobstore.ErrNotFound {
+			continue
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, h := range hashes {
+			reachable[h] = true
+		}
+	}
+
+	// Prune snapshots (skip any also kept by another share, and dedupe shared ids).
+	pruned := map[string]bool{}
+	for _, id := range prunable {
+		if keptSnaps[id] || pruned[id] {
+			continue
+		}
+		pruned[id] = true
+		hashes, err := manifestChunks(store, id)
+		if err != nil && err != blobstore.ErrNotFound {
+			return 0, 0, err
+		}
+		if err := db.DeleteSnapshot(id, hashes); err != nil {
+			return 0, 0, err
+		}
+		if !reachable[id] { // don't delete a manifest blob that doubles as a live chunk
+			if err := store.Delete(id); err != nil && err != blobstore.ErrNotFound {
+				return 0, 0, err
+			}
+		}
+		snaps++
+	}
+
+	// Sweep chunks: refcount==0 candidates, but only delete those NOT reachable
+	// from any kept snapshot. The reachability check is the safety net.
 	unref, err := db.UnreferencedChunks()
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, h := range unref {
-		if err := store.Delete(h); err != nil && err != blobstore.ErrNotFound {
+		if reachable[h] {
+			continue // a live head needs it despite refcount — never delete
+		}
+		deleted, err := db.DeleteChunkRow(h) // conditional on refcount<=0
+		if err != nil {
 			return 0, 0, err
 		}
-		if err := db.DeleteChunkRow(h); err != nil {
-			return 0, 0, err
+		if deleted {
+			if err := store.Delete(h); err != nil && err != blobstore.ErrNotFound {
+				return 0, 0, err
+			}
+			chunks++
 		}
 	}
-	return snaps, len(unref), nil
+	return snaps, chunks, nil
 }
 
 // manifestChunks returns the distinct chunk hashes referenced by the snapshot

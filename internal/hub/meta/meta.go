@@ -369,19 +369,29 @@ func (d *DB) DeleteSnapshot(id string, chunkHashes []string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM snapshots WHERE id=?`, id); err != nil {
+	res, err := tx.Exec(`DELETE FROM snapshots WHERE id=?`, id)
+	if err != nil {
 		return err
 	}
+	// Only decrement if this row actually existed. A double-delete (a retry, or a
+	// content id pruned once already) must not over-decrement and drive a chunk a
+	// live head still references below zero.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return tx.Commit()
+	}
 	for _, h := range chunkHashes {
-		if _, err := tx.Exec(`UPDATE chunks SET refcount=refcount-1 WHERE hash=?`, h); err != nil {
+		// max(0, …) floors the refcount: even if accounting is off, it can never
+		// go negative and later let a live chunk read as unreferenced.
+		if _, err := tx.Exec(`UPDATE chunks SET refcount=max(0, refcount-1) WHERE hash=?`, h); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// UnreferencedChunks lists chunk hashes whose refcount has dropped to zero (or
-// below): their bytes are no longer reachable and the GC may delete them.
+// UnreferencedChunks lists chunk hashes whose refcount has dropped to zero: GC
+// treats these as deletion CANDIDATES, then re-verifies each against the live
+// snapshot set before actually deleting (refcounts are only a hint).
 func (d *DB) UnreferencedChunks() ([]string, error) {
 	rows, err := d.sql.Query(`SELECT hash FROM chunks WHERE refcount<=0`)
 	if err != nil {
@@ -399,10 +409,45 @@ func (d *DB) UnreferencedChunks() ([]string, error) {
 	return out, rows.Err()
 }
 
-// DeleteChunkRow removes a chunk's metadata row (after its blob is gone).
-func (d *DB) DeleteChunkRow(hash string) error {
-	_, err := d.sql.Exec(`DELETE FROM chunks WHERE hash=?`, hash)
-	return err
+// DeleteChunkRow removes a chunk's metadata row, but ONLY if it is still
+// unreferenced at delete time (refcount<=0) — so a push that re-referenced the
+// chunk between GC's scan and this delete isn't silently corrupted. Returns
+// whether a row was removed; the caller deletes the blob only when it was.
+func (d *DB) DeleteChunkRow(hash string) (bool, error) {
+	res, err := d.sql.Exec(`DELETE FROM chunks WHERE hash=? AND refcount<=0`, hash)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// Heads returns the current head snapshot id of every share that has one. GC
+// uses these (plus the keep window) as the roots that must never be swept.
+func (d *DB) Heads() ([]string, error) {
+	return d.queryStrings(`SELECT head_snapshot FROM shares WHERE head_snapshot IS NOT NULL AND head_snapshot != ''`)
+}
+
+// SnapshotIDs returns every snapshot id recorded for a share.
+func (d *DB) SnapshotIDs(share string) ([]string, error) {
+	return d.queryStrings(`SELECT id FROM snapshots WHERE share=?`, share)
+}
+
+func (d *DB) queryStrings(query string, args ...any) ([]string, error) {
+	rows, err := d.sql.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func nullable(v int64) any {
