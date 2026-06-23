@@ -58,7 +58,7 @@
 | | | |
 |---|---|---|
 | 🤔 [Why devbox?](#-why-devbox) | 🧠 [Core Concepts](#-core-concepts) | 🏗️ [Architecture](#%EF%B8%8F-architecture) |
-| 🔄 [How Sync Works](#-how-sync-works) | 💥 [Conflicts](#-conflicts-never-lose-a-byte) | 🚀 [Quick Start](#-quick-start) |
+| 🔄 [How Sync Works](#-how-sync-works) | 💥 [Conflicts](#-conflicts-never-lose-a-byte) | ⚡ [Install & Run](#-install--run) | 🚀 [Quick Start](#-quick-start) |
 | 🧰 [CLI Reference](#-cli-reference) | 📊 [Live Dashboard](#-live-dashboard--watch-your-fabric-breathe) | 🪝 [Hooks](#-hooks) | 🙈 [.devignore & Secrets](#-devignore--secret-guard) |
 | 🕰️ [Versioning & Deploy](#%EF%B8%8F-versioning--deploy) | 🖥️ [Cross-Platform](#%EF%B8%8F-cross-platform) | 🔐 [Security & Durability](#-security--durability) |
 | 🗺️ [Roadmap](#%EF%B8%8F-roadmap) | ⚖️ [License & Open-Core](#%EF%B8%8F-license--open-core) | 🙌 [Contributing](#-contributing) |
@@ -274,6 +274,38 @@ The offline edit is **never lost** — it just lands as a clearly-named sibling.
 
 > 🚫 **No blocking prompts.** A headless daemon can't prompt you, and nagging would break the
 > whole "Dropbox-easy" promise. You get told; you choose when to look.
+
+---
+
+## ⚡ Install & Run
+
+**Client (macOS / Linux)** — one line. Detects your platform, lets you pick where the binary lives, and offers a **keep-alive auto-restart service** (launchd `KeepAlive` on mac, systemd `Restart=always` on Linux):
+
+```bash
+curl -fsSL https://git.shoemoney.ai/shoemoney/devbox/raw/branch/main/install.sh | sh
+# non-interactive: DEVBOX_BIN_DIR=~/.local/bin DEVBOX_SERVICE=1 sh install.sh
+# also install the hub: sh install.sh --hub
+```
+
+<details><summary>🪟 Windows · 🍎 macOS Full Disk Access · 🛠️ knobs</summary>
+
+- **Windows:** `irm https://git.shoemoney.ai/shoemoney/devbox/raw/branch/main/install.ps1 | iex` — copies `devbox.exe`, adds it to PATH, and (optionally) a restart-on-failure **Scheduled Task** at logon. Notes Controlled Folder Access if you have it on.
+- **macOS Full Disk Access:** to sync `~/Desktop`, `~/Documents`, `~/Downloads`, or **iCloud**, grant Full Disk Access to the `devbox` binary (System Settings → Privacy & Security → Full Disk Access). `devbox doctor` tests your actual mounts and tells you the exact fix + a deep link — a background daemon can't show the per-folder prompt, so without it those mounts silently fail.
+- **Knobs:** `--bin-dir DIR` · `--hub` · `--service` / `--no-service` · `--release-url URL` (or the `DEVBOX_*` env equivalents). No prebuilt release? The script falls back to a local `dist/` (run `scripts/build-release.sh`) or `go build`.
+- **Service control:** `systemctl --user {status,disable} devbox` (Linux) · `launchctl unload ~/Library/LaunchAgents/ai.shoemoney.devbox.plist` (mac).
+
+</details>
+
+**Hub on a NAS (TrueNAS / Synology / unRAID / any Docker host)** — self-healing container, drop-in:
+
+```bash
+docker compose up -d --build                          # hub on :8088, data persisted, restart: unless-stopped
+docker compose exec hub devbox-hub token --data /data # mint a join token
+# live dashboard: uncomment the :8099 port + --dashboard command in docker-compose.yml
+# stronger self-heal (restart on unhealthy): docker compose --profile selfheal up -d
+```
+
+The image is a tiny (~32 MB) static, non-root Alpine build — `Dockerfile` + `docker-compose.yml` at the repo root.
 
 ---
 
