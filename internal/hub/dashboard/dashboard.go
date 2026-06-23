@@ -68,7 +68,7 @@ func (d *Dashboard) Emit(ev Event) {
 	d.broker.publish(ev)
 }
 
-func (d *Dashboard) online(deviceID, _ string, now int64) bool {
+func (d *Dashboard) online(deviceID string, now int64) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ts, ok := d.lastSeen[deviceID]
@@ -138,7 +138,7 @@ func (d *Dashboard) handleState(w http.ResponseWriter, _ *http.Request) {
 	var online int64
 	devices := make([]deviceJSON, 0, len(devs))
 	for _, dv := range devs {
-		on := d.online(dv.ID, dv.Name, now)
+		on := d.online(dv.ID, now)
 		if on {
 			online++
 		}
