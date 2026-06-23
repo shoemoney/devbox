@@ -183,6 +183,15 @@ func (c *Client) Members(share string) (proto.MembersResponse, error) {
 	return resp, err
 }
 
+// Invite mints an invite token binding (principal, share, role) — the invitee
+// redeems it with `devbox join`. reshare grants the +s delegation bit.
+func (c *Client) Invite(share, principal, role string, reshare bool) (string, error) {
+	var resp proto.InviteResponse
+	req := proto.InviteRequest{Share: share, Principal: principal, Role: role, Reshare: reshare}
+	err := c.do(http.MethodPost, proto.PathInvite, true, req, &resp)
+	return resp.Token, err
+}
+
 // do sends a JSON request (nil body for GET) and decodes a JSON response into
 // out (nil out discards the body). It sets the bearer header when auth is true.
 func (c *Client) do(method, path string, auth bool, body, out any) error {

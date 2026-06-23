@@ -52,6 +52,7 @@ func main() {
 		ignoreCmd(),
 		conflictsCmd(),
 		membersCmd(),
+		inviteCmd(),
 		startCmd(),
 		stopCmd(),
 		pauseCmd(),
@@ -303,6 +304,39 @@ func logCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func inviteCmd() *cobra.Command {
+	var reshare bool
+	cmd := &cobra.Command{
+		Use:   "invite <share> <principal> <viewer|editor|admin|owner>",
+		Short: "✉️  mint an invite token granting a principal a role on a share (M8a)",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			tok, err := c.Invite(args[0], args[1], args[2], reshare)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "✉️  invite for %s as %s on %s:\n  %s\nthey run: devbox join %s %s\n",
+				args[1], args[2], args[0], tok, d.Hub, tok)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&reshare, "reshare", false, "grant the +s bit (lets them delegate)")
+	return cmd
 }
 
 func membersCmd() *cobra.Command {

@@ -272,6 +272,82 @@ func TestPushWriteGate(t *testing.T) {
 	}
 }
 
+// joinWith enrolls a fresh device using token and returns its JoinResponse.
+func joinWith(t *testing.T, base, token string) proto.JoinResponse {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, body := do(t, "POST", base+proto.PathJoin, "", mustJSON(t, proto.JoinRequest{
+		Token: token, Name: "dev", Pubkey: pub,
+		Signature: ed25519.Sign(priv, proto.JoinChallenge(token, pub)),
+	}))
+	if st != http.StatusOK {
+		t.Fatalf("join status = %d, body = %s", st, body)
+	}
+	var j proto.JoinResponse
+	if err := json.Unmarshal(body, &j); err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+
+// TestInviteFlow is the M8a device-facing invite security contract: an owner
+// invites a collaborator, who joins via the invite token and lands with the bound
+// role; the legacy→explicit flip preserves the owner's access; and attenuation is
+// enforced (an editor without +s can't invite).
+func TestInviteFlow(t *testing.T) {
+	base, db := testHub(t)
+	now := time.Now().Unix()
+
+	// Owner device joins a legacy share and publishes it.
+	if err := db.CreateToken(HashToken("owntok"), now+3600); err != nil {
+		t.Fatal(err)
+	}
+	owner := joinWith(t, base, "owntok")
+	if st, _ := do(t, "POST", base+proto.PathPublish, owner.Bearer, mustJSON(t, proto.PublishRequest{Share: "proj"})); st != http.StatusOK {
+		t.Fatal("publish failed")
+	}
+
+	// Owner invites principal "bob" as editor.
+	st, body := do(t, "POST", base+proto.PathInvite, owner.Bearer, mustJSON(t, proto.InviteRequest{
+		Share: "proj", Principal: "bob", Role: "editor",
+	}))
+	if st != http.StatusOK {
+		t.Fatalf("invite status = %d, body = %s", st, body)
+	}
+	var invResp proto.InviteResponse
+	if err := json.Unmarshal(body, &invResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// The share flipped to explicit but the OWNER kept access (self-seed).
+	if mode, _ := db.ACLMode("proj"); mode != "explicit" {
+		t.Fatalf("share should be explicit after invite, got %q", mode)
+	}
+	bogus := mustJSON(t, proto.PushRequest{Share: "proj", ManifestHash: strings.Repeat("a", 64)})
+	if st, _ := do(t, "POST", base+proto.PathPush, owner.Bearer, bogus); st == http.StatusForbidden {
+		t.Fatal("owner must keep write access across the legacy→explicit flip")
+	}
+
+	// Bob's device redeems the invite → enrolled as principal bob with editor.
+	bob := joinWith(t, base, invResp.Token)
+	if pid, _ := db.DevicePrincipal(bob.DeviceID); pid != "bob" {
+		t.Fatalf("invited device principal = %q, want bob", pid)
+	}
+	if st, _ := do(t, "POST", base+proto.PathPush, bob.Bearer, bogus); st == http.StatusForbidden {
+		t.Fatal("invited editor must pass the write gate")
+	}
+
+	// Attenuation: bob (editor, NO +s) cannot invite anyone.
+	if st, _ := do(t, "POST", base+proto.PathInvite, bob.Bearer, mustJSON(t, proto.InviteRequest{
+		Share: "proj", Principal: "carol", Role: "viewer",
+	})); st != http.StatusForbidden {
+		t.Fatalf("editor without +s must not invite, got %d", st)
+	}
+}
+
 // TestHandleMembers covers GET /v1/members: a fresh share reads as legacy, and
 // after a grant it lists the member with the role name and reshare bit.
 func TestHandleMembers(t *testing.T) {

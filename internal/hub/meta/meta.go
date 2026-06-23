@@ -133,6 +133,19 @@ CREATE TABLE members (
 );
 ALTER TABLE shares ADD COLUMN acl_mode TEXT NOT NULL DEFAULT 'legacy';
 `,
+	// 3 (v2, M8a): invites. An invite is a normal one-time join token (so it rides
+	// the existing /v1/join proof-of-possession flow) PLUS a binding recorded here:
+	// when redeemed, the joining device is assigned the bound principal and granted
+	// the bound role on the share. A plain join token has no invites row → v1 join.
+	`
+CREATE TABLE invites (
+  token_hash   TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  share        TEXT NOT NULL,
+  role         INTEGER NOT NULL,
+  can_reshare  INTEGER NOT NULL DEFAULT 0
+);
+`,
 }
 
 // Role levels on a share (higher = more authority). A device's effective write
@@ -383,37 +396,126 @@ type Member struct {
 }
 
 // EffectiveRole returns a device's role on a share and whether the share is in
-// explicit-ACL mode. In legacy mode (the v1 default — no member grants yet) every
-// known device is an implicit RoleOwner, so v1 behavior is preserved exactly. In
-// explicit mode the device's principal must hold a member row, else RoleViewer-1
-// (0) = deny-by-default. An unknown/revoked device gets 0 in either mode.
+// explicit-ACL mode. Thin wrapper over EffectiveMember for the push write gate.
 func (d *DB) EffectiveRole(deviceID, share string) (role int, explicit bool, err error) {
+	role, _, explicit, err = d.EffectiveMember(deviceID, share)
+	return role, explicit, err
+}
+
+// EffectiveMember returns a device's role, its reshare (+s) right, and whether
+// the share is in explicit-ACL mode. In legacy mode (the v1 default — no member
+// grants) every known device is an implicit RoleOwner with reshare, so v1 behavior
+// is preserved exactly. In explicit mode the device's principal must hold a member
+// row, else role 0 (deny-by-default). An unknown/revoked device gets 0.
+func (d *DB) EffectiveMember(deviceID, share string) (role int, canReshare, explicit bool, err error) {
 	var pid string
 	err = d.sql.QueryRow(`SELECT principal_id FROM devices WHERE id=? AND revoked=0`, deviceID).Scan(&pid)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
-	var mode string
-	err = d.sql.QueryRow(`SELECT acl_mode FROM shares WHERE name=?`, share).Scan(&mode)
-	if errors.Is(err, sql.ErrNoRows) {
-		mode = "legacy" // unknown share: stay v1-permissive, push fails later if truly absent
-	} else if err != nil {
-		return 0, false, err
+	mode, err := d.ACLMode(share)
+	if err != nil {
+		return 0, false, false, err
 	}
 	if mode != "explicit" {
-		return RoleOwner, false, nil
+		return RoleOwner, true, false, nil // implicit owner can reshare
 	}
-	err = d.sql.QueryRow(`SELECT role FROM members WHERE share=? AND principal_id=?`, share, pid).Scan(&role)
+	var cr int
+	err = d.sql.QueryRow(`SELECT role, can_reshare FROM members WHERE share=? AND principal_id=?`, share, pid).Scan(&role, &cr)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, true, nil // deny-by-default
+		return 0, false, true, nil // deny-by-default
 	}
 	if err != nil {
-		return 0, true, err
+		return 0, false, true, err
 	}
-	return role, true, nil
+	return role, cr != 0, true, nil
+}
+
+// DevicePrincipal returns the principal a device belongs to.
+func (d *DB) DevicePrincipal(deviceID string) (string, error) {
+	var pid string
+	err := d.sql.QueryRow(`SELECT principal_id FROM devices WHERE id=?`, deviceID).Scan(&pid)
+	return pid, err
+}
+
+// RoleOf returns a principal's current role on a share (0 if none/legacy).
+func (d *DB) RoleOf(share, principalID string) (int, error) {
+	var role int
+	err := d.sql.QueryRow(`SELECT role FROM members WHERE share=? AND principal_id=?`, share, principalID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return role, err
+}
+
+// MayGrant reports whether a caller holding callerRole (and the +s bit) may set a
+// principal currently at targetCurrentRole to grantRole. Pure attenuation: a
+// compromised client can't escalate because the hub re-checks this server-side.
+//   - grantRole must be a real role;
+//   - viewers can't grant; editors need +s; admins/owners always may;
+//   - you can never grant ABOVE your own role (delegation only narrows);
+//   - you can never touch a principal who currently outranks you (no demoting up).
+func MayGrant(callerRole int, callerCanReshare bool, targetCurrentRole, grantRole int) bool {
+	if grantRole < RoleViewer || grantRole > RoleOwner {
+		return false
+	}
+	if callerRole < RoleEditor {
+		return false
+	}
+	if callerRole < RoleAdmin && !callerCanReshare {
+		return false
+	}
+	return grantRole <= callerRole && targetCurrentRole <= callerRole
+}
+
+// Invite is the binding redeemed when an invite token is used at /v1/join.
+type Invite struct {
+	Principal  string
+	Share      string
+	Role       int
+	CanReshare bool
+}
+
+// CreateInvite mints an invite: a redeemable join token (in tokens) plus its
+// binding (in invites), in one transaction.
+func (d *DB) CreateInvite(tokenHash string, expiresAt int64, inv Invite) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO tokens (hash, expires_at) VALUES (?,?)`, tokenHash, nullable(expiresAt)); err != nil {
+		return err
+	}
+	cr := 0
+	if inv.CanReshare {
+		cr = 1
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO invites (token_hash, principal_id, share, role, can_reshare) VALUES (?,?,?,?,?)`,
+		tokenHash, inv.Principal, inv.Share, inv.Role, cr); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// InviteBinding returns the binding for a token hash (ok=false for a plain token).
+func (d *DB) InviteBinding(tokenHash string) (inv Invite, ok bool, err error) {
+	var cr int
+	err = d.sql.QueryRow(
+		`SELECT principal_id, share, role, can_reshare FROM invites WHERE token_hash=?`, tokenHash).
+		Scan(&inv.Principal, &inv.Share, &inv.Role, &cr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Invite{}, false, nil
+	}
+	if err != nil {
+		return Invite{}, false, err
+	}
+	inv.CanReshare = cr != 0
+	return inv, true, nil
 }
 
 // EnsurePrincipal creates a principal if absent (idempotent).

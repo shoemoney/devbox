@@ -14,8 +14,24 @@ const (
 	PathLog     = "/v1/log"     // GET ?share=, auth: snapshot history
 	PathEvents  = "/v1/events"  // GET ?share=, auth: SSE stream of change events
 	PathMembers = "/v1/members" // GET ?share=, auth: who can access a share (M8a)
+	PathInvite  = "/v1/invite"  // POST, auth: mint an invite token for a share (M8a)
 	PathMetrics = "/metrics"    // GET, no auth: Prometheus text exposition
 )
+
+// InviteRequest asks the hub to mint an invite: a join token that, when redeemed,
+// binds the joining device to Principal with Role on Share. The caller must hold a
+// role that permits the grant (server-side attenuation); +s lets an editor delegate.
+type InviteRequest struct {
+	Share     string `json:"share"`
+	Principal string `json:"principal"`
+	Role      string `json:"role"`    // viewer|editor|admin|owner
+	Reshare   bool   `json:"reshare"` // grant the +s delegation bit
+}
+
+// InviteResponse returns the raw invite token; the invitee runs `devbox join`.
+type InviteResponse struct {
+	Token string `json:"token"`
+}
 
 // SnapshotInfo is one entry in a share's history.
 type SnapshotInfo struct {

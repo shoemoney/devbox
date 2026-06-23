@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathHead, s.auth(s.handleHead))
 	mux.HandleFunc("GET "+proto.PathLog, s.auth(s.handleLog))
 	mux.HandleFunc("GET "+proto.PathMembers, s.auth(s.handleMembers))
+	mux.HandleFunc("POST "+proto.PathInvite, s.auth(s.handleInvite))
 	mux.HandleFunc("GET "+proto.PathEvents, s.auth(s.handleEvents))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
 	return mux
@@ -138,7 +139,94 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// If this was an invite token (M8a), apply its binding: the device joins as the
+	// bound principal with the bound role on the share. The grant was already
+	// attenuation-checked when the invite was minted (handleInvite). A plain join
+	// token has no binding → v1 behavior (device stays principal 'owner').
+	if inv, ok, err := s.db.InviteBinding(HashToken(req.Token)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if ok {
+		if err := s.db.SetDevicePrincipal(deviceID, inv.Principal); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.db.SetMember(inv.Share, inv.Principal, inv.Role, inv.CanReshare); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, proto.JoinResponse{DeviceID: deviceID, Bearer: bearer})
+}
+
+// handleInvite mints an invite token for a share (M8a). The caller's effective
+// role + reshare bit must permit the requested grant (attenuation, enforced here
+// server-side so a compromised client can't escalate). On a legacy share the
+// caller is an implicit owner: minting an invite seeds the caller's own principal
+// as owner and flips the share to explicit, so the caller never locks themselves
+// (or their other devices, same principal) out.
+func (s *Server) handleInvite(w http.ResponseWriter, r *http.Request, deviceID string) {
+	var req proto.InviteRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	grantRole, ok := meta.ParseRole(req.Role)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unknown role "+req.Role)
+		return
+	}
+	if req.Principal == "" {
+		writeErr(w, http.StatusBadRequest, "missing principal")
+		return
+	}
+
+	// Serialize with publish so the legacy→explicit flip + self-seed is atomic
+	// against a concurrent first grant.
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+
+	callerRole, callerReshare, explicit, err := s.db.EffectiveMember(deviceID, req.Share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	targetCurrent, err := s.db.RoleOf(req.Share, req.Principal)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !meta.MayGrant(callerRole, callerReshare, targetCurrent, grantRole) {
+		writeErr(w, http.StatusForbidden, "your role may not grant this")
+		return
+	}
+	// Preserve the caller's access across the legacy→explicit flip: seed the
+	// caller's principal as owner before the share stops being open.
+	if !explicit {
+		callerPrincipal, err := s.db.DevicePrincipal(deviceID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.db.SetMember(req.Share, callerPrincipal, meta.RoleOwner, true); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := s.db.EnsurePrincipal(req.Principal, req.Principal, time.Now().Unix()); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	tok, err := randomBearer()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	inv := meta.Invite{Principal: req.Principal, Share: req.Share, Role: grantRole, CanReshare: req.Reshare}
+	if err := s.db.CreateInvite(HashToken(tok), time.Now().Add(24*time.Hour).Unix(), inv); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, proto.InviteResponse{Token: tok})
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, deviceID string) {

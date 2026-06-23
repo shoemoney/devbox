@@ -459,6 +459,62 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 	}
 }
 
+// TestMayGrant locks down the invite attenuation rules (the security core): a
+// caller can never grant above their own role, never touch a superior, viewers
+// can't grant, and editors need the +s reshare bit.
+func TestMayGrant(t *testing.T) {
+	cases := []struct {
+		name                            string
+		callerRole                      int
+		reshare                         bool
+		targetCurrent, grant            int
+		want                            bool
+	}{
+		{"owner grants editor", RoleOwner, false, 0, RoleEditor, true},
+		{"owner grants owner (co-owner)", RoleOwner, false, 0, RoleOwner, true},
+		{"admin grants admin", RoleAdmin, false, 0, RoleAdmin, true},
+		{"admin can't grant owner (above self)", RoleAdmin, false, 0, RoleOwner, false},
+		{"editor with +s grants editor", RoleEditor, true, 0, RoleEditor, true},
+		{"editor with +s can't grant admin", RoleEditor, true, 0, RoleAdmin, false},
+		{"editor WITHOUT +s can't grant", RoleEditor, false, 0, RoleViewer, false},
+		{"viewer can't grant", RoleViewer, true, 0, RoleViewer, false},
+		{"can't demote a superior owner", RoleEditor, true, RoleOwner, RoleViewer, false},
+		{"invalid role rejected", RoleOwner, false, 0, 999, false},
+		{"zero role (unmembered) can't grant", 0, false, 0, RoleViewer, false},
+	}
+	for _, c := range cases {
+		if got := MayGrant(c.callerRole, c.reshare, c.targetCurrent, c.grant); got != c.want {
+			t.Errorf("%s: MayGrant(%d,%v,%d,%d)=%v, want %v", c.name, c.callerRole, c.reshare, c.targetCurrent, c.grant, got, c.want)
+		}
+	}
+}
+
+// TestInviteBinding round-trips an invite and confirms a plain token has none.
+func TestInviteBinding(t *testing.T) {
+	db := open(t)
+	if err := db.CreateInvite("h1", 1000, Invite{Principal: "bob", Share: "proj", Role: RoleEditor, CanReshare: true}); err != nil {
+		t.Fatal(err)
+	}
+	inv, ok, err := db.InviteBinding("h1")
+	if err != nil || !ok {
+		t.Fatalf("InviteBinding = %v, %v", ok, err)
+	}
+	if inv.Principal != "bob" || inv.Share != "proj" || inv.Role != RoleEditor || !inv.CanReshare {
+		t.Fatalf("binding = %+v", inv)
+	}
+	// The invite token is redeemable like any join token.
+	if redeemed, _ := db.RedeemToken("h1", 500); !redeemed {
+		t.Fatal("invite token should redeem via the normal token path")
+	}
+	// A plain token has no binding.
+	if err := db.CreateToken("plain", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := db.InviteBinding("plain"); ok {
+		t.Fatal("a plain join token must have no invite binding")
+	}
+}
+
 // TestMigrationFromV1WithData is the realistic upgrade path: a populated v1
 // database (user_version 0, global snapshot PK) is migrated in place. Data must
 // survive, a backup must be written, and the v1 idempotent-push legacy — a share
