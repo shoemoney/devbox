@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -132,7 +133,7 @@ func publishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := syncer.Push(c, root, share, ig, guard, head)
+			res, err := syncer.Push(c, root, share, "", ig, guard, head)
 			if err != nil {
 				return err
 			}
@@ -155,11 +156,11 @@ func publishCmd() *cobra.Command {
 func mountCmd() *cobra.Command {
 	var ro bool
 	cmd := &cobra.Command{
-		Use:   "mount <share> <localdir>",
-		Short: "🔗 mount a hub share into a local directory (clone + sync)",
+		Use:   "mount <share[/subpath]> <localdir>",
+		Short: "🔗 mount a hub share (or sub-path) into a local directory (clone + sync)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			share := args[0]
+			share, subpath := splitShare(args[0])
 			local, err := filepath.Abs(args[1])
 			if err != nil {
 				return err
@@ -178,7 +179,7 @@ func mountCmd() *cobra.Command {
 			if err := os.MkdirAll(local, 0o755); err != nil {
 				return err
 			}
-			d.Mounts = upsertMount(d.Mounts, config.Mount{Share: share, Local: local, Hub: d.Hub, ReadOnly: ro})
+			d.Mounts = upsertMount(d.Mounts, config.Mount{Share: share, Subpath: subpath, Local: local, Hub: d.Hub, ReadOnly: ro})
 			if err := config.SaveDaemon(dir, d); err != nil {
 				return err
 			}
@@ -198,15 +199,15 @@ func mountCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			key := share + "\x00" + local
+			key := share + "\x00" + subpath + "\x00" + local
 
 			var pr syncer.PullResult
 			var newBase string
 			if ro {
-				pr, err = syncer.Pull(c, local, share, st[key], host, time.Now().Unix(), ig, guard)
+				pr, err = syncer.Pull(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard)
 				newBase = pr.Base
 			} else {
-				newBase, pr, err = syncer.Sync(c, local, share, st[key], host, time.Now().Unix(), ig, guard)
+				newBase, pr, err = syncer.Sync(c, local, share, subpath, st[key], host, time.Now().UnixNano(), ig, guard)
 			}
 			if err != nil {
 				return err
@@ -221,7 +222,7 @@ func mountCmd() *cobra.Command {
 			if ro {
 				mode = "ro"
 			}
-			fmt.Fprintf(out, "🔗 mounted %q -> %s [%s]\n", share, local, mode)
+			fmt.Fprintf(out, "🔗 mounted %q -> %s [%s]\n", args[0], local, mode)
 			fmt.Fprintf(out, "📥 %d files, %d conflicts\n", len(pr.Written), len(pr.Conflicts))
 			fmt.Fprintln(out, "▶️  run 'devbox start' to keep it live-synced")
 			return nil
@@ -229,6 +230,15 @@ func mountCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&ro, "ro", false, "mount read-only (pull only, never push)")
 	return cmd
+}
+
+// splitShare splits "share/sub/path" into ("share", "sub/path"); a bare "share"
+// yields an empty sub-path.
+func splitShare(arg string) (share, subpath string) {
+	if i := strings.IndexByte(arg, '/'); i >= 0 {
+		return arg[:i], arg[i+1:]
+	}
+	return arg, ""
 }
 
 func upsertMount(mounts []config.Mount, m config.Mount) []config.Mount {

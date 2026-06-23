@@ -56,13 +56,13 @@ func TestTwoWayConvergeAndConflict(t *testing.T) {
 	// A creates foo + bar and syncs them up.
 	writeFile(t, rootA, "foo.txt", "A1\n")
 	writeFile(t, rootA, "bar.txt", "shared\n")
-	baseA, _, err := Sync(A, rootA, "s", "", "alice", 1000, ig, guard)
+	baseA, _, err := Sync(A, rootA, "s", "", "", "alice", 1000, ig, guard)
 	if err != nil {
 		t.Fatalf("A sync: %v", err)
 	}
 
 	// B clones the share into an empty dir.
-	baseB, _, err := Sync(B, rootB, "s", "", "bob", 1001, ig, guard)
+	baseB, _, err := Sync(B, rootB, "s", "", "", "bob", 1001, ig, guard)
 	if err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
@@ -72,14 +72,14 @@ func TestTwoWayConvergeAndConflict(t *testing.T) {
 
 	// A edits foo.txt; it becomes the hub head.
 	writeFile(t, rootA, "foo.txt", "A2\n")
-	baseA, _, err = Sync(A, rootA, "s", baseA, "alice", 1002, ig, guard)
+	baseA, _, err = Sync(A, rootA, "s", "", baseA, "alice", 1002, ig, guard)
 	if err != nil {
 		t.Fatalf("A sync 2: %v", err)
 	}
 
 	// B edits the SAME file (still on the old base) and syncs -> conflict.
 	writeFile(t, rootB, "foo.txt", "B2\n")
-	_, prB2, err := Sync(B, rootB, "s", baseB, "bob", 1003, ig, guard)
+	_, prB2, err := Sync(B, rootB, "s", "", baseB, "bob", 1003, ig, guard)
 	if err != nil {
 		t.Fatalf("B sync 2: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestTwoWayConvergeAndConflict(t *testing.T) {
 	}
 
 	// A syncs again and must receive B's conflict copy — full convergence.
-	if _, _, err = Sync(A, rootA, "s", baseA, "alice", 1004, ig, guard); err != nil {
+	if _, _, err = Sync(A, rootA, "s", "", baseA, "alice", 1004, ig, guard); err != nil {
 		t.Fatalf("A sync 3: %v", err)
 	}
 	if read(t, rootA, "foo.txt") != "A2\n" {
@@ -126,13 +126,13 @@ func TestPullDeleteAndEditBeatsDelete(t *testing.T) {
 
 	writeFile(t, rootA, "keep.txt", "k\n")
 	writeFile(t, rootA, "gone.txt", "g\n")
-	baseA, _, _ := Sync(A, rootA, "s", "", "alice", 1, ig, guard)
-	baseB, _, _ := Sync(B, rootB, "s", "", "bob", 2, ig, guard)
+	baseA, _, _ := Sync(A, rootA, "s", "", "", "alice", 1, ig, guard)
+	baseB, _, _ := Sync(B, rootB, "s", "", "", "bob", 2, ig, guard)
 
 	// A deletes gone.txt; B (clone) should drop it on next sync.
 	os.Remove(filepath.Join(rootA, "gone.txt"))
-	baseA, _, _ = Sync(A, rootA, "s", baseA, "alice", 3, ig, guard)
-	if _, _, err := Sync(B, rootB, "s", baseB, "bob", 4, ig, guard); err != nil {
+	baseA, _, _ = Sync(A, rootA, "s", "", baseA, "alice", 3, ig, guard)
+	if _, _, err := Sync(B, rootB, "s", "", baseB, "bob", 4, ig, guard); err != nil {
 		t.Fatal(err)
 	}
 	if exists(rootB, "gone.txt") {
@@ -158,7 +158,7 @@ func TestPullSkipsFileDirClash(t *testing.T) {
 	rootA := t.TempDir()
 	writeFile(t, rootA, "data", "hello\n")
 	writeFile(t, rootA, "ok.txt", "fine\n")
-	if _, _, err := Sync(A, rootA, "s", "", "alice", 1, ig, guard); err != nil {
+	if _, _, err := Sync(A, rootA, "s", "", "", "alice", 1, ig, guard); err != nil {
 		t.Fatal(err)
 	}
 
@@ -167,7 +167,7 @@ func TestPullSkipsFileDirClash(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(rootB, "data", "child"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pr, err := Pull(B, rootB, "s", "", "bob", 2, ig, guard)
+	pr, err := Pull(B, rootB, "s", "", "", "bob", 2, ig, guard)
 	if err != nil {
 		t.Fatalf("pull must not abort on a file/dir clash: %v", err)
 	}
@@ -177,5 +177,65 @@ func TestPullSkipsFileDirClash(t *testing.T) {
 	// The non-clashing file still applied.
 	if !exists(rootB, "ok.txt") {
 		t.Fatal("ok.txt should have been written despite the data/ clash")
+	}
+}
+
+// TestSubPathMount: a device mounts only proj/app, sees just that subtree
+// (stripped), and editing+pushing from it must NOT drop the rest of the share.
+func TestSubPathMount(t *testing.T) {
+	db, _ := meta.Open(":memory:")
+	defer db.Close()
+	store, _ := blobstore.NewDisk(t.TempDir())
+	srv := httptest.NewServer(hub.NewServer(db, store).Handler())
+	defer srv.Close()
+	guard, _ := secret.New(nil)
+	ig, _ := LoadIgnore(t.TempDir())
+
+	A := joinDevice(t, db, srv.URL, "alice")
+	B := joinDevice(t, db, srv.URL, "bob")
+	_ = A.Publish("proj")
+
+	// A: whole-share mount with a nested tree.
+	rootA := t.TempDir()
+	writeFile(t, rootA, "app/main.go", "package main // v1\n")
+	writeFile(t, rootA, "app/util.go", "package app\n")
+	writeFile(t, rootA, "docs/readme.md", "# docs\n")
+	writeFile(t, rootA, "root.txt", "top\n")
+	baseA, _, err := Sync(A, rootA, "proj", "", "", "alice", 1, ig, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// B: SUB-PATH mount of proj/app -> empty dir; sees only app/, stripped.
+	rootB := t.TempDir()
+	baseB, _, err := Sync(B, rootB, "proj", "app", "", "bob", 2, ig, guard)
+	if err != nil {
+		t.Fatalf("B subpath sync: %v", err)
+	}
+	if !exists(rootB, "main.go") || !exists(rootB, "util.go") {
+		t.Fatal("B did not clone the app/ subtree (stripped)")
+	}
+	if exists(rootB, "docs/readme.md") || exists(rootB, "root.txt") || exists(rootB, "app") {
+		t.Fatal("B's sub-path mount leaked files from outside app/")
+	}
+
+	// B edits main.go and pushes: the splice must preserve docs/ and root.txt.
+	writeFile(t, rootB, "main.go", "package main // B-edit\n")
+	if _, _, err = Sync(B, rootB, "proj", "app", baseB, "bob", 3, ig, guard); err != nil {
+		t.Fatalf("B subpath push: %v", err)
+	}
+
+	// A (whole share) gets B's edit AND still has docs/ + root.txt intact.
+	if _, _, err = Sync(A, rootA, "proj", "", baseA, "alice", 4, ig, guard); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, rootA, "app/main.go") != "package main // B-edit\n" {
+		t.Fatalf("A did not receive B's sub-path edit: %q", read(t, rootA, "app/main.go"))
+	}
+	if !exists(rootA, "docs/readme.md") || !exists(rootA, "root.txt") {
+		t.Fatal("B's sub-path push DROPPED files outside the sub-path!")
+	}
+	if read(t, rootA, "docs/readme.md") != "# docs\n" {
+		t.Fatal("docs/readme.md was corrupted by the sub-path push")
 	}
 }

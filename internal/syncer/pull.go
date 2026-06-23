@@ -30,7 +30,7 @@ type PullResult struct {
 //   - delete-vs-edit never loses the edit (the edit always survives).
 //
 // Never destroys a byte: every losing local edit becomes a conflict copy.
-func Pull(c *transport.Client, root, share, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (PullResult, error) {
+func Pull(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (PullResult, error) {
 	head, err := c.Head(share)
 	if err != nil {
 		return PullResult{}, err
@@ -40,15 +40,18 @@ func Pull(c *transport.Client, root, share, base, host string, now int64, ig *ig
 		return res, nil // nothing on the hub, or already up to date
 	}
 
-	theirs, err := fetchManifest(c, head)
+	theirsFull, err := fetchManifest(c, head)
 	if err != nil {
 		return PullResult{}, err
 	}
+	theirs := filterStrip(theirsFull, subpath)
 	var baseM manifest.Manifest
 	if base != "" {
-		if baseM, err = fetchManifest(c, base); err != nil {
+		baseFull, err := fetchManifest(c, base)
+		if err != nil {
 			return PullResult{}, err
 		}
+		baseM = filterStrip(baseFull, subpath)
 	}
 	ours, _, err := manifest.Build(root, ig, guard)
 	if err != nil {
@@ -129,14 +132,14 @@ func Pull(c *transport.Client, root, share, base, host string, now int64, ig *ig
 // Sync brings a mount into agreement with the hub: pull+merge to head, then push
 // the merged local state; retries if the hub advanced underneath. Returns the new
 // base snapshot and the pull result.
-func Sync(c *transport.Client, root, share, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (string, PullResult, error) {
+func Sync(c *transport.Client, root, share, subpath, base, host string, now int64, ig *ignore.Matcher, guard *secret.Guard) (string, PullResult, error) {
 	for attempt := 0; attempt < 5; attempt++ {
-		pr, err := Pull(c, root, share, base, host, now, ig, guard)
+		pr, err := Pull(c, root, share, subpath, base, host, now, ig, guard)
 		if err != nil {
 			return base, pr, err
 		}
 		base = pr.Base
-		push, err := Push(c, root, share, ig, guard, base)
+		push, err := Push(c, root, share, subpath, ig, guard, base)
 		if err != nil {
 			return base, pr, err
 		}
@@ -147,6 +150,48 @@ func Sync(c *transport.Client, root, share, base, host string, now int64, ig *ig
 		return push.Snapshot, pr, nil
 	}
 	return base, PullResult{}, fmt.Errorf("sync: too many conflict retries")
+}
+
+// --- sub-path helpers: a mount's local root maps to share/subpath/ ---
+
+// under reports whether a share-relative path lives within subpath ("" = whole share).
+func under(path, subpath string) bool {
+	if subpath == "" {
+		return true
+	}
+	return path == subpath || strings.HasPrefix(path, subpath+"/")
+}
+
+// strip removes the subpath prefix, yielding a local-relative path.
+func strip(path, subpath string) string {
+	if subpath == "" {
+		return path
+	}
+	return strings.TrimPrefix(path, subpath+"/")
+}
+
+// prefixPath adds the subpath prefix to a local-relative path.
+func prefixPath(path, subpath string) string {
+	if subpath == "" {
+		return path
+	}
+	return subpath + "/" + path
+}
+
+// filterStrip keeps only the entries of a full share manifest that live under
+// subpath, with the prefix stripped (so they're local-relative).
+func filterStrip(m manifest.Manifest, subpath string) manifest.Manifest {
+	if subpath == "" {
+		return m
+	}
+	var out []manifest.Entry
+	for _, e := range m.Entries {
+		if under(e.Path, subpath) {
+			e.Path = strip(e.Path, subpath)
+			out = append(out, e)
+		}
+	}
+	return manifest.Manifest{Entries: out}
 }
 
 func fetchManifest(c *transport.Client, id string) (manifest.Manifest, error) {

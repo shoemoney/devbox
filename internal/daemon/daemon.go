@@ -69,7 +69,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return nil
 }
 
-func mountKey(m config.Mount) string { return m.Share + "\x00" + m.Local }
+func mountKey(m config.Mount) string { return m.Share + "\x00" + m.Subpath + "\x00" + m.Local }
 
 func (d *Daemon) getBase(m config.Mount) string {
 	d.mu.Lock()
@@ -157,7 +157,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	now := time.Now().UnixNano() // nanoseconds so conflict-copy names don't collide
 
 	if m.ReadOnly {
-		pr, err := syncer.Pull(c, m.Local, m.Share, base, d.host, now, ig, d.guard)
+		pr, err := syncer.Pull(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard)
 		if err != nil {
 			d.logf("pull %s: %v", m.Share, err)
 			return
@@ -167,7 +167,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		return
 	}
 
-	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, base, d.host, now, ig, d.guard)
+	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard)
 	if err != nil {
 		d.logf("sync %s: %v", m.Share, err)
 		return

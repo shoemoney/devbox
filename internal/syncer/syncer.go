@@ -6,6 +6,7 @@ package syncer
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
@@ -28,17 +29,20 @@ type Result struct {
 
 // Push builds a manifest of root (filtered by ig + guard), uploads any blobs the
 // hub is missing (chunks + the manifest blob), then commits a snapshot on share.
+// For a sub-path mount (subpath != "") root maps to share/subpath/: the local
+// subtree is spliced into the share head (entries outside subpath are preserved)
+// so a partial mount can push without dropping the rest of the share.
 // parent is the device's last-known head ("" if none).
-func Push(c *transport.Client, root, share string, ig *ignore.Matcher, guard *secret.Guard, parent string) (Result, error) {
-	m, blocked, err := manifest.Build(root, ig, guard)
+func Push(c *transport.Client, root, share, subpath string, ig *ignore.Matcher, guard *secret.Guard, parent string) (Result, error) {
+	localM, blocked, err := manifest.Build(root, ig, guard)
 	if err != nil {
 		return Result{}, err
 	}
 
-	// Gather the bytes of every distinct chunk, plus the manifest blob itself.
+	// Gather the bytes of every distinct local chunk (with sizes).
 	blobs := map[string][]byte{}
-	refs := map[string]int64{} // distinct chunk hash -> size
-	for _, e := range m.Entries {
+	refs := map[string]int64{} // local chunk hash -> size
+	for _, e := range localM.Entries {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(e.Path)))
 		if err != nil {
 			return Result{}, err
@@ -54,11 +58,17 @@ func Push(c *transport.Client, root, share string, ig *ignore.Matcher, guard *se
 			}
 		}
 	}
-	manBytes, err := m.Marshal()
+
+	// Splice the local subtree into the full share manifest (no-op when subpath == "").
+	fullM, err := splice(c, localM, subpath, parent)
 	if err != nil {
 		return Result{}, err
 	}
-	manHash := m.ID()
+	manBytes, err := fullM.Marshal()
+	if err != nil {
+		return Result{}, err
+	}
+	manHash := fullM.ID()
 	blobs[manHash] = manBytes
 
 	// Upload only what the hub lacks.
@@ -76,10 +86,22 @@ func Push(c *transport.Client, root, share string, ig *ignore.Matcher, guard *se
 		}
 	}
 
-	chunks := make([]proto.ChunkRef, 0, len(refs))
-	for h, sz := range refs {
-		chunks = append(chunks, proto.ChunkRef{Hash: h, Size: sz})
+	// Declare every distinct chunk the full manifest references so the hub's
+	// refcounts stay correct. Local chunks carry their size; chunks already on
+	// the hub (outside the subpath) carry 0 — the hub keeps the size it recorded
+	// on first upload and just bumps the refcount.
+	seen := map[string]bool{}
+	var chunks []proto.ChunkRef
+	for _, e := range fullM.Entries {
+		for _, h := range e.Chunks {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			chunks = append(chunks, proto.ChunkRef{Hash: h, Size: refs[h]})
+		}
 	}
+
 	resp, err := c.Push(proto.PushRequest{
 		Share:        share,
 		Parent:       parent,
@@ -94,9 +116,36 @@ func Push(c *transport.Client, root, share string, ig *ignore.Matcher, guard *se
 		Head:     resp.Head,
 		Blocked:  blocked,
 		Uploaded: len(missing),
-		Files:    len(m.Entries),
+		Files:    len(localM.Entries),
 		Conflict: resp.Conflict,
 	}, nil
+}
+
+// splice builds the full share manifest from a sub-path mount's local manifest:
+// it re-prefixes local entries with subpath and keeps the parent snapshot's
+// entries outside subpath. For a whole-share mount it returns localM unchanged.
+func splice(c *transport.Client, localM manifest.Manifest, subpath, parent string) (manifest.Manifest, error) {
+	if subpath == "" {
+		return localM, nil
+	}
+	entries := make([]manifest.Entry, 0, len(localM.Entries))
+	if parent != "" {
+		base, err := fetchManifest(c, parent)
+		if err != nil {
+			return manifest.Manifest{}, err
+		}
+		for _, e := range base.Entries {
+			if !under(e.Path, subpath) {
+				entries = append(entries, e)
+			}
+		}
+	}
+	for _, e := range localM.Entries {
+		e.Path = prefixPath(e.Path, subpath)
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return manifest.Manifest{Entries: entries}, nil
 }
 
 // LoadIgnore compiles root/.devignore (an empty matcher if the file is absent).

@@ -98,7 +98,7 @@ func TestPushEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Push(c, root, "projects", ig, guard, "")
+	res, err := Push(c, root, "projects", "", ig, guard, "")
 	if err != nil {
 		t.Fatalf("push: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestPushEndToEnd(t *testing.T) {
 
 	// Second push of the unchanged tree: dedup means zero blobs uploaded and the
 	// same content-addressed snapshot id.
-	res2, err := Push(c, root, "projects", ig, guard, res.Head)
+	res2, err := Push(c, root, "projects", "", ig, guard, res.Head)
 	if err != nil {
 		t.Fatalf("second push: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestPushConflictWhenBehind(t *testing.T) {
 	}
 	rootA := t.TempDir()
 	writeFile(t, rootA, "a.txt", "from alice\n")
-	resA, err := Push(a, rootA, "shared", ig, guard, "")
+	resA, err := Push(a, rootA, "shared", "", ig, guard, "")
 	if err != nil {
 		t.Fatalf("A push: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestPushConflictWhenBehind(t *testing.T) {
 	b := joinDevice(t, db, srv.URL, "bob")
 	rootB := t.TempDir()
 	writeFile(t, rootB, "b.txt", "from bob\n")
-	resB, err := Push(b, rootB, "shared", ig, guard, "")
+	resB, err := Push(b, rootB, "shared", "", ig, guard, "")
 	if err != nil {
 		t.Fatalf("B push: %v", err)
 	}
