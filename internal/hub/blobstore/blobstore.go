@@ -103,12 +103,26 @@ func (d *Disk) Put(hash string, data []byte) error {
 		tmp.Close()
 		return err
 	}
+	// Flush the blob's bytes to the platter before the rename publishes it, so a
+	// crash can't leave a truncated file masquerading as a complete blob.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	// Rename to a non-existent final path: atomic on POSIX, and on Windows too
 	// since we never rename over an existing file (Put is a no-op when present).
-	return os.Rename(tmpName, d.path(hash))
+	if err := os.Rename(tmpName, d.path(hash)); err != nil {
+		return err
+	}
+	// fsync the shard dir so the rename entry itself survives a crash.
+	if df, derr := os.Open(dir); derr == nil {
+		_ = df.Sync() // ponytail: dir fsync is best-effort; unsupported on Windows
+		df.Close()
+	}
+	return nil
 }
 
 // Get returns the blob bytes for hash, or ErrNotFound.

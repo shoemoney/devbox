@@ -437,11 +437,25 @@ func atomicWrite(path string, data []byte, perm os.FileMode) error {
 		f.Close()
 		return err
 	}
+	// Flush the data to the platter before the rename publishes it: a power loss
+	// after the rename but before the bytes land would leave a truncated/empty file.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
 	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	// fsync the parent dir so the rename entry itself survives a crash.
+	if dir, derr := os.Open(filepath.Dir(path)); derr == nil {
+		_ = dir.Sync() // ponytail: dir fsync is best-effort; unsupported on Windows
+		dir.Close()
+	}
+	return nil
 }
