@@ -515,6 +515,4 @@ interface, config-driven limits, `/metrics`) but **not part of this OSS repo**.
 
 *“It's like Dropbox, but it actually respects that you're a developer.”* 💙
 
-<sub>🤖 Spec & scaffolding generated with <a href="https://claude.com/claude-code">Claude Code</a></sub>
-
 </div>
