@@ -152,9 +152,44 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 // snapshot doesn't contain is deleted. A bad onlyPath (not in the snapshot) errors
 // without touching the tree.
 func Restore(c *transport.Client, root, share, subpath, snapshot, onlyPath, host string, now int64, ig *ignore.Matcher, guard *secret.Guard, hk *hooks.Runner) (Result, error) {
-	full, err := fetchManifest(c, snapshot)
+	if _, err := applySnapshot(c, root, subpath, snapshot, onlyPath, ig, guard); err != nil {
+		return Result{}, err
+	}
+	head, err := c.Head(share)
 	if err != nil {
 		return Result{}, err
+	}
+	return Push(c, root, share, subpath, ig, guard, head, hk)
+}
+
+// DeployResult summarizes pinning a mount to a snapshot.
+type DeployResult struct {
+	Snapshot string // the snapshot now applied (== its manifest blob hash)
+	Written  int    // files written from the snapshot
+}
+
+// Deploy rewrites the mounted subtree to match a snapshot WITHOUT pushing — it
+// pins a (typically read-only) mount to a specific version, e.g. blue/green
+// deploys of /var/www. Unlike Restore it creates no new head: the snapshot stays
+// exactly as-is on the hub and history is untouched. The caller pins the mount
+// (config.Mount.Pinned) so the daemon won't live-advance it back to head.
+func Deploy(c *transport.Client, root, subpath, snapshot string, ig *ignore.Matcher, guard *secret.Guard) (DeployResult, error) {
+	n, err := applySnapshot(c, root, subpath, snapshot, "", ig, guard)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	return DeployResult{Snapshot: snapshot, Written: n}, nil
+}
+
+// applySnapshot rewrites root to match a snapshot's manifest (filtered+stripped
+// to subpath): writes every entry and, when onlyPath is empty, deletes any local
+// path the snapshot doesn't contain. With onlyPath set, only that one entry is
+// written (no deletes). Returns the number of entries written. A bad onlyPath
+// (not in the snapshot) errors without touching the tree.
+func applySnapshot(c *transport.Client, root, subpath, snapshot, onlyPath string, ig *ignore.Matcher, guard *secret.Guard) (int, error) {
+	full, err := fetchManifest(c, snapshot)
+	if err != nil {
+		return 0, err
 	}
 	target := filterStrip(full, subpath)
 	idx := indexEntries(target)
@@ -162,36 +197,32 @@ func Restore(c *transport.Client, root, share, subpath, snapshot, onlyPath, host
 	if onlyPath != "" {
 		e, ok := idx[onlyPath]
 		if !ok {
-			return Result{}, fmt.Errorf("restore: path %q not in snapshot %s", onlyPath, snapshot)
+			return 0, fmt.Errorf("path %q not in snapshot %s", onlyPath, snapshot)
 		}
 		if _, err := writeEntry(c, root, e); err != nil {
-			return Result{}, err
+			return 0, err
 		}
-	} else {
-		for _, e := range target.Entries {
-			if _, err := writeEntry(c, root, e); err != nil {
-				return Result{}, err
-			}
-		}
-		// Delete anything present locally but absent from the snapshot.
-		local, _, err := manifest.Build(root, ig, guard)
-		if err != nil {
-			return Result{}, err
-		}
-		for _, e := range local.Entries {
-			if _, keep := idx[e.Path]; !keep {
-				if err := deleteFile(root, e.Path); err != nil {
-					return Result{}, err
-				}
-			}
-		}
+		return 1, nil
 	}
 
-	head, err := c.Head(share)
-	if err != nil {
-		return Result{}, err
+	for _, e := range target.Entries {
+		if _, err := writeEntry(c, root, e); err != nil {
+			return 0, err
+		}
 	}
-	return Push(c, root, share, subpath, ig, guard, head, hk)
+	// Delete anything present locally but absent from the snapshot.
+	local, _, err := manifest.Build(root, ig, guard)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range local.Entries {
+		if _, keep := idx[e.Path]; !keep {
+			if err := deleteFile(root, e.Path); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return len(target.Entries), nil
 }
 
 // Sync brings a mount into agreement with the hub: pull+merge to head, then push

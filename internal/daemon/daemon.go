@@ -90,6 +90,12 @@ func (d *Daemon) setBase(m config.Mount, base string) {
 }
 
 func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
+	if m.Pinned {
+		// Deployed to a fixed snapshot; never live-advance it. Held until re-mount.
+		d.logf("📌 %s pinned to %s — not live-syncing", m.Share, d.getBase(m))
+		<-ctx.Done()
+		return
+	}
 	c := transport.New(m.Hub)
 	c.SetBearer(d.cfg.Bearer)
 	if d.maxBytesPerSec > 0 {

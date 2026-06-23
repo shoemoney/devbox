@@ -37,6 +37,7 @@ func main() {
 		mountCmd(),
 		logCmd(),
 		restoreCmd(),
+		deployCmd(),
 		startCmd(),
 		statusCmd(),
 		versionCmd(),
@@ -360,6 +361,91 @@ func findMount(mounts []config.Mount, share string) (config.Mount, bool) {
 	return config.Mount{}, false
 }
 
+func deployCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deploy <share> <snapshot>",
+		Short: "🚀 pin a mount to a specific snapshot (apply without pushing — blue/green)",
+		Long: "deploy rewrites a mount's local directory to a specific snapshot WITHOUT pushing a\n" +
+			"new head — it pins the mount at that version (history untouched), so the daemon\n" +
+			"won't live-advance it. Ideal for blue/green deploys of /var/www boxes. Re-mount to\n" +
+			"resume live sync. Snapshot ids come from 'devbox log <share>'.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			share, snapshot := args[0], args[1]
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			m, ok := findDeployMount(d.Mounts, share)
+			if !ok {
+				return fmt.Errorf("no mount for share %q — mount it first: devbox mount %s <dir> --ro", share, share)
+			}
+
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			ig, err := syncer.LoadIgnore(m.Local)
+			if err != nil {
+				return err
+			}
+			guard, err := secret.New(nil)
+			if err != nil {
+				return err
+			}
+			res, err := syncer.Deploy(c, m.Local, m.Subpath, snapshot, ig, guard)
+			if err != nil {
+				return err
+			}
+
+			// Pin the mount so the daemon holds it at this snapshot (re-mount clears it).
+			m.Pinned = true
+			d.Mounts = upsertMount(d.Mounts, m)
+			if err := config.SaveDaemon(dir, d); err != nil {
+				return err
+			}
+			st, err := config.LoadState(dir)
+			if err != nil {
+				return err
+			}
+			st[share+"\x00"+m.Subpath+"\x00"+m.Local] = res.Snapshot
+			if err := config.SaveState(dir, st); err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "🚀 deployed %s -> snapshot %s (%d files) at %s [pinned]\n", share, short(res.Snapshot), res.Written, m.Local)
+			if !m.ReadOnly {
+				fmt.Fprintln(out, "⚠️  this is a read-write mount; local edits here are now isolated until you re-mount")
+			}
+			return nil
+		},
+	}
+}
+
+// findDeployMount returns the read-only mount for share if one exists, else the
+// first mount of any kind (deploy is intended for a --ro mount).
+func findDeployMount(mounts []config.Mount, share string) (config.Mount, bool) {
+	first, ok := config.Mount{}, false
+	for _, m := range mounts {
+		if m.Share != share {
+			continue
+		}
+		if m.ReadOnly {
+			return m, true
+		}
+		if !ok {
+			first, ok = m, true
+		}
+	}
+	return first, ok
+}
+
 func startCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
@@ -418,6 +504,9 @@ func statusCmd() *cobra.Command {
 				mode := "rw"
 				if m.ReadOnly {
 					mode = "ro"
+				}
+				if m.Pinned {
+					mode += ",pinned"
 				}
 				fmt.Fprintf(out, "  - %s/%s -> %s [%s]\n", m.Share, m.Subpath, m.Local, mode)
 			}

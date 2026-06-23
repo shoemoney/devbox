@@ -39,6 +39,9 @@ type Mount struct {
 	Local    string `toml:"local"`
 	Hub      string `toml:"hub"`
 	ReadOnly bool   `toml:"readonly,omitempty"`
+	// Pinned means this mount is held at a deployed snapshot (devbox deploy) and
+	// the daemon must NOT live-advance it to head. Re-mounting clears it.
+	Pinned bool `toml:"pinned,omitempty"`
 }
 
 // Daemon is daemon.toml: which hub this device joined (with its bearer token and
