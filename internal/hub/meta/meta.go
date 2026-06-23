@@ -395,13 +395,6 @@ type Member struct {
 	CanReshare bool
 }
 
-// EffectiveRole returns a device's role on a share and whether the share is in
-// explicit-ACL mode. Thin wrapper over EffectiveMember for the push write gate.
-func (d *DB) EffectiveRole(deviceID, share string) (role int, explicit bool, err error) {
-	role, _, explicit, err = d.EffectiveMember(deviceID, share)
-	return role, explicit, err
-}
-
 // EffectiveMember returns a device's role, its reshare (+s) right, and whether
 // the share is in explicit-ACL mode. In legacy mode (the v1 default — no member
 // grants) every known device is an implicit RoleOwner with reshare, so v1 behavior

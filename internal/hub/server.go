@@ -351,7 +351,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	role, _, err := s.db.EffectiveRole(deviceID, req.Share)
+	role, _, _, err := s.db.EffectiveMember(deviceID, req.Share)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

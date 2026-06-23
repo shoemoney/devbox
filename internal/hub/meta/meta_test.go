@@ -394,7 +394,7 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 
 	// Legacy: both devices are implicit owners (v1 behavior preserved).
 	for _, dev := range []string{"devA", "devB"} {
-		role, explicit, err := db.EffectiveRole(dev, "proj")
+		role, _, explicit, err := db.EffectiveMember(dev, "proj")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -403,7 +403,7 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 		}
 	}
 	// An unknown device gets nothing, even in legacy mode.
-	if role, _, _ := db.EffectiveRole("ghost", "proj"); role != 0 {
+	if role, _, _, _ := db.EffectiveMember("ghost", "proj"); role != 0 {
 		t.Fatalf("unknown device role = %d, want 0", role)
 	}
 
@@ -428,7 +428,7 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 		dev  string
 		want int
 	}{{"devA", RoleOwner}, {"devB", RoleEditor}} {
-		role, explicit, err := db.EffectiveRole(tc.dev, "proj")
+		role, _, explicit, err := db.EffectiveMember(tc.dev, "proj")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,7 +441,7 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 	if err := db.SetMember("proj", "bob", RoleViewer, false); err != nil {
 		t.Fatal(err)
 	}
-	if role, _, _ := db.EffectiveRole("devB", "proj"); role >= RoleEditor {
+	if role, _, _, _ := db.EffectiveMember("devB", "proj"); role >= RoleEditor {
 		t.Fatalf("demoted devB role = %d, want < editor(%d)", role, RoleEditor)
 	}
 
@@ -449,7 +449,7 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 	if err := db.RemoveMember("proj", "bob"); err != nil {
 		t.Fatal(err)
 	}
-	if role, explicit, _ := db.EffectiveRole("devB", "proj"); role != 0 || !explicit {
+	if role, _, explicit, _ := db.EffectiveMember("devB", "proj"); role != 0 || !explicit {
 		t.Fatalf("removed devB role=%d explicit=%v, want 0/true (deny-by-default)", role, explicit)
 	}
 
