@@ -23,6 +23,13 @@ import (
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
+// Request body caps, enforced via http.MaxBytesReader to bound the DoS surface
+// (an unbounded io.ReadAll / JSON decode would let a client OOM the hub).
+const (
+	maxBlobBytes = 256 << 20 // one chunk/manifest blob — generous
+	maxJSONBytes = 8 << 20   // any JSON control request
+)
+
 // Server is the devbox hub: metadata in db, blob bytes in store, change events
 // fanned out via broker.
 type Server struct {
@@ -214,9 +221,11 @@ func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string)
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request, _ string) {
 	hash := r.PathValue("hash")
+	r.Body = http.MaxBytesReader(w, r.Body, maxBlobBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		// MaxBytesReader trips here when the body exceeds maxBlobBytes.
+		writeErr(w, http.StatusRequestEntityTooLarge, err.Error())
 		return
 	}
 	if chunk.Hash(body) != hash {
@@ -360,9 +369,16 @@ func randomBearer() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// decode reads a JSON request body into v, writing a 400 on failure.
+// decode reads a JSON request body into v, writing a 400 on failure (or a 413 if
+// the body exceeds maxJSONBytes — bounding the decode DoS surface).
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBytes)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, err.Error())
+			return false
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}

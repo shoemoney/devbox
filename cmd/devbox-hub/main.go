@@ -69,7 +69,18 @@ func serveCmd() *cobra.Command {
 			}
 			srv := hub.NewServer(db, store)
 			fmt.Fprintf(cmd.OutOrStdout(), "🛰️  devbox-hub listening on %s (data: %s)\n", listen, data)
-			return http.ListenAndServe(listen, srv.Handler())
+			// Explicit timeouts bound the slowloris surface (bare ListenAndServe
+			// has none). No WriteTimeout on purpose: the /v1/events SSE stream is
+			// long-lived and a WriteTimeout would kill it mid-flight.
+			httpSrv := &http.Server{
+				Addr:              listen,
+				Handler:           srv.Handler(),
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				IdleTimeout:       120 * time.Second,
+				MaxHeaderBytes:    1 << 20,
+			}
+			return httpSrv.ListenAndServe()
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
