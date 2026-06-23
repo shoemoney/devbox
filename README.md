@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M5-yellow?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M6-yellow?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -42,8 +42,9 @@
 > | M2 — Hub + one-way push (deployed + verified cross-machine 🛰️) | ✅ done |
 > | M3 — Two-way sync · SSE fan-out · 3-way conflict copies · live daemon | ✅ done — **two real Macs sync live through the hub** 🔄 |
 > | M4 — Read-only mounts · **sub-path mounts** · bandwidth cap | ✅ done — fleet-verified |
-> | M5 — Lifecycle hooks (pre/post push/pull, on-conflict) | 🔨 building |
-> | M6+ | ⬜ design complete, not started |
+> | M5 — Lifecycle hooks (pre/post push/pull, on-conflict) | ✅ done — **`post-pull` ran on a real fleet node** 🪝 |
+> | M6 — Versioning: `log` / `restore` + hub GC | 🔨 building |
+> | M6.5 · M7 | ⬜ design complete, not started |
 
 ---
 
@@ -468,7 +469,8 @@ flowchart LR
     style M2 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M3 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M4 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M5 fill:#4F9CF9,color:#fff
+    style M5 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M6 fill:#4F9CF9,color:#fff
 ```
 
 | | Milestone | Deliverable |
@@ -478,7 +480,8 @@ flowchart LR
 | ✅ | **M2 — Hub + push** 🛰️ | shares, join tokens, CAS, `publish`, HTTP upload, snapshots, bearer auth, `/metrics` — deployed on `.10`, verified cross-machine |
 | ✅ | **M3 — Two-way sync** 🔄 | SSE event fan-out, `mount`, pull + atomic apply, per-file 3-way conflict copies, live `start` daemon — **two Macs sync live through the hub** |
 | ✅ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, **sub-path mounts** (`mount proj/app /dir`), bandwidth cap — fleet-verified |
-| 🔨 | **M5 — Hooks** 🪝 | bash lifecycle runner, templates, env, timeout |
+| ✅ | **M5 — Hooks** 🪝 | bash (+`.ps1`) lifecycle runner, env injection, 60s timeout, `pre-*` veto — `post-pull` fired on a fleet node |
+| 🔨 | **M6 — Versioning** 🕰️ | `devbox log` / `restore`, hub GC |
 | ⬜ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
 | ⬜ | **M5 — Hooks** 🪝 | bash/`.ps1` runner, templates, env, timeout |
 | ⬜ | **M6 — Versioning** 🕰️ | `log` / `restore`, hub GC |
