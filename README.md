@@ -488,18 +488,16 @@ flowchart LR
 | ✅ | **M6.5 — Deploy** 🚀 | `devbox deploy <share> <snapshot>` — apply a snapshot without pushing, `[pinned]` mount; fleet-verified blue/green |
 | ✅ | **M7 — Hardening** 🛡️ | `devbox doctor`, `stop`/pidfile, `hook edit/list`, SSE backoff+jitter, **60s rescan fallback** (survives dead/limited inotify watchers — PRD risk #1), share-name guard, release builds — fleet-verified |
 | ✅ | **M7.5 — Audit hardening** 🔐 | adversarial security/data-loss audit + fixes: blob-hash **path-traversal** blocked, **download blob-integrity** check, manifest-path **containment**, secret-guard **case-insensitive** + more patterns, **never-clobber** ignored/guarded files, **GC made safe** vs cross-share refcount undercount — all with regression tests, race-clean, fleet-verified |
+| ✅ | **M7.6 — Hardening complete** 🛡️ | 💽 **fsync durability** on atomic writes (power-loss safe), 🚪 **request size caps + server timeouts** (DoS), 🆔 **pidfile PID-reuse guard** (start-time token), 🪪 **join proof-of-possession** (ed25519 signature, token not burned on a bad request) — fanned out to parallel worktree agents, regression-tested, race-clean, fleet-verified |
 
 <details>
-<summary>🔐 <b>hardening still deferred</b> (single-owner v1 threat model)</summary>
+<summary>🔮 <b>genuinely v2</b> (would change the single-owner model)</summary>
 
-The post-v1 audit fixed every data-loss + arbitrary-file path; these are the **lower-risk** items left, safe to defer because v1 is **single-owner / all devices trusted** (PRD §2):
+Everything that protects data or the box is done. What's left only matters under a **different threat model** and is intentionally not in v1:
 
-- 🔢 **Per-`(share,id)` snapshot refcounts** — the GC is already ground-truth-safe; this is the cleaner accounting (needs a live-hub schema migration).
-- 🔑 **Read-side ACL + deny-by-default writes** — only matters once shares span *multiple owners* (v2 teams); today every enrolled device is yours.
-- 🪪 **Join proof-of-possession** (sign a challenge with the device key).
-- 🚪 **Request size limits + server timeouts** (DoS hardening; hub sits behind NPM on the LAN).
-- 💽 **fsync durability** on atomic writes (power-loss safety).
-- 🆔 **pidfile PID-reuse guard**, conflict-copy on explicit `restore`/`deploy`.
+- 🔑 **Read-side ACL + deny-by-default writes** — only meaningful once shares span *multiple owners* (v2 teams); in v1 every enrolled device is yours, so a restrictive ACL would just break multi-device sync.
+- 🔢 **Per-`(share,id)` snapshot refcounts** — purely cosmetic now: the GC is ground-truth-safe regardless, and the collision only *under*-counts (never a leak or loss). Not worth a live-hub schema migration.
+- 📝 **Conflict-copy on explicit `restore`/`deploy`** — `restore` is a deliberate "go back" where overwriting is the intent; preserving every uncommitted edit as a `.conflict` is a v2 UX call.
 
 </details>
 
