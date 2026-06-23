@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M6.5-yellow?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M7-yellow?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -44,7 +44,8 @@
 > | M4 — Read-only mounts · **sub-path mounts** · bandwidth cap | ✅ done — fleet-verified |
 > | M5 — Lifecycle hooks (pre/post push/pull, on-conflict) | ✅ done — **`post-pull` ran on a real fleet node** 🪝 |
 > | M6 — Versioning: `log` / `restore` + hub GC | ✅ done — restore reverted a file on the fleet 🕰️ |
-> | M6.5 — `devbox deploy` · M7 — hardening | 🔨 next |
+> | M6.5 — `devbox deploy` (pin a mount to a snapshot, no push) | ✅ done — **blue/green-deployed v1 on a real box while head stayed v2** 🚀 |
+> | M7 — Hardening: `devbox doctor`, reconnect/backoff, name-clash, release builds | 🔨 next |
 
 ---
 
@@ -319,7 +320,7 @@ container automatically. 🪄
 | `devbox pause` / `resume` | ⏸️▶️ Halt sync without unmounting |
 | `devbox log` | 🕰️ Snapshot history |
 | `devbox restore <snap> [path]` | ↩️ Roll back a file or a whole share |
-| `devbox deploy <share> <snap>` | 🚢 Pin a read-only mount to a snapshot *(v1.5)* |
+| `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
 | `devbox conflicts` | 💥 List conflict copies |
 | `devbox ignore <pattern>` | 🙈 Append to `.devignore` + rescan |
 | `devbox hook edit <event>` | 🪝 Open a hook in `$EDITOR` |
@@ -425,8 +426,9 @@ gitGraph
   themselves content-addressed → 100 pushes don't store the tree map 100×.
 - ↩️ `devbox restore <snap> [path]` rolls back a file or whole share (itself a new change →
   reversible).
-- 🚢 `devbox deploy <share> <snap>` *(v1.5)* atomically pins a read-only mount to a snapshot —
-  **blue/green deploys** for your `/var/www` boxes, basically free.
+- 🚀 `devbox deploy <share> <snap>` pins a mount to a snapshot by **applying it without pushing a
+  new head** — history stays untouched and the daemon won't drag it back to latest (`[pinned]`).
+  **Blue/green deploys** for your `/var/www` boxes, basically free; re-mount to resume live sync.
 - 🧹 `devbox-hub gc` sweeps unreferenced chunks (refcounted).
 
 ---
