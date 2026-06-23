@@ -217,11 +217,14 @@ func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err
 		headSet[h] = true
 	}
 
-	// Partition snapshots into kept vs prunable. A snapshot is prunable only if
-	// it's deletable for its share AND not the head of ANY share (a shared content
-	// id may be one share's stale snapshot but another's live head — never prune).
+	// Partition snapshots into kept vs prunable. Snapshots are now per-(share, id),
+	// so a prunable entry is a (share, id) pair: it's deletable for its share AND
+	// not the head of ANY share (a shared content id may be one share's stale
+	// snapshot but another's live head — never prune). keptSnaps tracks ids kept by
+	// any share, for reachability and to protect a shared manifest blob.
 	keptSnaps := map[string]bool{}
-	var prunable []string
+	type snapRef struct{ share, id string }
+	var prunable []snapRef
 	for _, share := range shares {
 		del, err := db.DeletableSnapshots(share, keep)
 		if err != nil {
@@ -237,7 +240,7 @@ func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err
 		}
 		for _, id := range ids {
 			if delSet[id] && !headSet[id] {
-				prunable = append(prunable, id)
+				prunable = append(prunable, snapRef{share, id})
 			} else {
 				keptSnaps[id] = true
 			}
@@ -261,22 +264,26 @@ func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err
 		}
 	}
 
-	// Prune snapshots (skip any also kept by another share, and dedupe shared ids).
-	pruned := map[string]bool{}
-	for _, id := range prunable {
-		if keptSnaps[id] || pruned[id] {
-			continue
+	// Prune each (share, id): delete that share's row and decrement its chunks. The
+	// same content id in another share keeps its own row and counts. Delete the
+	// shared manifest blob at most once, and only when it's unreachable from any
+	// kept snapshot (reachable already includes every kept id, so this also won't
+	// remove a manifest blob that doubles as a live chunk).
+	blobDeleted := map[string]bool{}
+	for _, p := range prunable {
+		if keptSnaps[p.id] {
+			continue // a live/kept snapshot in another share still needs this content
 		}
-		pruned[id] = true
-		hashes, err := manifestChunks(store, id)
+		hashes, err := manifestChunks(store, p.id)
 		if err != nil && err != blobstore.ErrNotFound {
 			return 0, 0, err
 		}
-		if err := db.DeleteSnapshot(id, hashes); err != nil {
+		if err := db.DeleteSnapshot(p.share, p.id, hashes); err != nil {
 			return 0, 0, err
 		}
-		if !reachable[id] { // don't delete a manifest blob that doubles as a live chunk
-			if err := store.Delete(id); err != nil && err != blobstore.ErrNotFound {
+		if !reachable[p.id] && !blobDeleted[p.id] {
+			blobDeleted[p.id] = true
+			if err := store.Delete(p.id); err != nil && err != blobstore.ErrNotFound {
 				return 0, 0, err
 			}
 		}

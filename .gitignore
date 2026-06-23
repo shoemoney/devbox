@@ -1,5 +1,7 @@
 .devbox/
+.claude/
 blobs/
+*.pre-v2.bak
 *.db
 *.db-wal
 *.db-shm

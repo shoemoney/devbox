@@ -1,6 +1,11 @@
 package meta
 
-import "testing"
+import (
+	"database/sql"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func open(t *testing.T) *DB {
 	t.Helper()
@@ -220,7 +225,7 @@ func TestDeleteSnapshotDecrementsRefcounts(t *testing.T) {
 	}
 
 	// Delete s1, which referenced h1 and h2.
-	if err := db.DeleteSnapshot("s1", []string{"h1", "h2"}); err != nil {
+	if err := db.DeleteSnapshot("proj", "s1", []string{"h1", "h2"}); err != nil {
 		t.Fatal(err)
 	}
 	if rc, _ := db.ChunkRefcount("h1"); rc != 2 {
@@ -244,7 +249,7 @@ func TestUnreferencedChunks(t *testing.T) {
 	}
 
 	// Drop s1: h2 falls to 0 and becomes collectable; h1 still has s2,s3.
-	if err := db.DeleteSnapshot("s1", []string{"h1", "h2"}); err != nil {
+	if err := db.DeleteSnapshot("proj", "s1", []string{"h1", "h2"}); err != nil {
 		t.Fatal(err)
 	}
 	un, err := db.UnreferencedChunks()
@@ -263,5 +268,175 @@ func TestUnreferencedChunks(t *testing.T) {
 	}
 	if got, _ := db.UnreferencedChunks(); len(got) != 0 {
 		t.Fatalf("after row delete, unreferenced = %v, want []", got)
+	}
+}
+
+// TestCrossShareRefcount is the v2 (M8) data-model fix: identical content pushed
+// to two shares must count its chunks once PER SHARE. Under v1's global snapshot
+// PK the second push hit the idempotent branch and never bumped the refcount
+// (undercount) and recorded no row for the second share. With per-(share, id)
+// snapshots each share accounts independently.
+func TestCrossShareRefcount(t *testing.T) {
+	db := open(t)
+	for _, s := range []string{"a", "b"} {
+		if err := db.CreateShare(s, "dev1", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Same content id "shared" referencing chunk c1, pushed to both shares.
+	snap := func(share string) Snapshot {
+		return Snapshot{ID: "shared", Share: share, DeviceID: "dev1", ManifestHash: "shared", CreatedAt: 10}
+	}
+	if err := db.AddSnapshot(snap("a"), []ChunkRef{{"c1", 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddSnapshot(snap("b"), []ChunkRef{{"c1", 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _ := db.ChunkRefcount("c1"); rc != 2 {
+		t.Fatalf("c1 refcount = %d, want 2 (each share counts independently)", rc)
+	}
+	// Each share sees the snapshot in its own log + ids.
+	for _, s := range []string{"a", "b"} {
+		if log, _ := db.SnapshotLog(s, 10); len(log) != 1 || log[0].ID != "shared" {
+			t.Fatalf("share %s log = %+v, want one 'shared' row", s, log)
+		}
+		if ids, _ := db.SnapshotIDs(s); len(ids) != 1 {
+			t.Fatalf("share %s ids = %v, want [shared]", s, ids)
+		}
+	}
+	// Pruning one share's copy leaves the other's refcount intact (rc 2 -> 1).
+	if err := db.DeleteSnapshot("a", "shared", []string{"c1"}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _ := db.ChunkRefcount("c1"); rc != 1 {
+		t.Fatalf("c1 refcount after pruning share a = %d, want 1 (share b still references it)", rc)
+	}
+	if ids, _ := db.SnapshotIDs("b"); len(ids) != 1 {
+		t.Fatalf("share b still has its snapshot after share a pruned, ids = %v", ids)
+	}
+}
+
+// TestMigrationRunner checks the PRAGMA user_version runner: a fresh DB lands at
+// the latest version, reopening is idempotent, and a DB written by a newer build
+// is refused. Uses an on-disk DB so version + the pre-migration backup persist.
+func TestMigrationRunner(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if v := userVersion(t, db.sql); v != len(migrations) {
+		t.Fatalf("fresh DB user_version = %d, want %d", v, len(migrations))
+	}
+	// Exercise the v2 schema end-to-end (composite PK) to prove the migration took.
+	if err := db.CreateShare("s", "dev1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddSnapshot(Snapshot{ID: "x", Share: "s", DeviceID: "dev1", ManifestHash: "x", CreatedAt: 1}, []ChunkRef{{"c", 1}}); err != nil {
+		t.Fatalf("AddSnapshot on migrated schema: %v", err)
+	}
+	db.Close()
+
+	// Reopen: no pending migrations, must be a clean no-op.
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if v := userVersion(t, db2.sql); v != len(migrations) {
+		t.Fatalf("reopened DB user_version = %d, want %d", v, len(migrations))
+	}
+	if ids, _ := db2.SnapshotIDs("s"); len(ids) != 1 {
+		t.Fatalf("data lost across reopen: ids = %v", ids)
+	}
+	db2.Close()
+
+	// A DB from a newer devbox (version beyond what we know) must be refused, not
+	// silently downgraded or corrupted.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec("PRAGMA user_version = 999"); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open must refuse a database newer than this build")
+	}
+}
+
+func userVersion(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var v int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// TestMigrationFromV1WithData is the realistic upgrade path: a populated v1
+// database (user_version 0, global snapshot PK) is migrated in place. Data must
+// survive, a backup must be written, and the v1 idempotent-push legacy — a share
+// whose head has no snapshot row of its own — must be repaired so every head has a
+// row under the new per-(share, id) model.
+func TestMigrationFromV1WithData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.db")
+
+	// Hand-build a v1 database: baseline tables, user_version left at 0.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(baselineSchema); err != nil {
+		t.Fatal(err)
+	}
+	// Share s owns content snapX (has its row). Share t's head is the SAME content
+	// (the v1 idempotent push advanced t's head but recorded no (t, snapX) row).
+	stmts := []string{
+		`INSERT INTO shares(name, head_snapshot, created_by, created_at) VALUES('s','snapX','dev1',1)`,
+		`INSERT INTO shares(name, head_snapshot, created_by, created_at) VALUES('t','snapX','dev1',1)`,
+		`INSERT INTO snapshots(id,share,parent_id,device_id,created_at,manifest_hash) VALUES('snapX','s',NULL,'dev1',1,'snapX')`,
+		`INSERT INTO chunks(hash,size,refcount) VALUES('c1',5,1)`,
+	}
+	for _, s := range stmts {
+		if _, err := raw.Exec(s); err != nil {
+			t.Fatalf("seed v1 data %q: %v", s, err)
+		}
+	}
+	raw.Close()
+
+	db, err := Open(path) // triggers the v1 -> v2 migration
+	if err != nil {
+		t.Fatalf("migrating a populated v1 DB: %v", err)
+	}
+	defer db.Close()
+
+	if v := userVersion(t, db.sql); v != len(migrations) {
+		t.Fatalf("post-migration user_version = %d, want %d", v, len(migrations))
+	}
+	if _, err := os.Stat(path + ".pre-v2.bak"); err != nil {
+		t.Fatalf("pre-migration backup missing: %v", err)
+	}
+	// Share s keeps its row.
+	if ids, _ := db.SnapshotIDs("s"); len(ids) != 1 || ids[0] != "snapX" {
+		t.Fatalf("share s ids = %v, want [snapX]", ids)
+	}
+	// Share t's head row was backfilled (the v1 legacy is repaired).
+	if ids, _ := db.SnapshotIDs("t"); len(ids) != 1 || ids[0] != "snapX" {
+		t.Fatalf("share t ids = %v, want [snapX] (head backfill)", ids)
+	}
+	if head, ok, _ := db.ShareHead("t"); !ok || head != "snapX" {
+		t.Fatalf("share t head = %q ok=%v, want snapX", head, ok)
+	}
+	// The composite-PK schema is live: a new push to t records its own row.
+	if err := db.AddSnapshot(Snapshot{ID: "snapY", Share: "t", ParentID: "snapX", DeviceID: "dev1", ManifestHash: "snapY", CreatedAt: 2}, []ChunkRef{{"c2", 6}}); err != nil {
+		t.Fatalf("post-migration AddSnapshot: %v", err)
+	}
+	if ids, _ := db.SnapshotIDs("t"); len(ids) != 2 {
+		t.Fatalf("share t ids after new push = %v, want 2", ids)
 	}
 }

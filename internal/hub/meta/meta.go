@@ -8,14 +8,26 @@ package meta
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+// connPragmas are per-connection settings re-applied on every Open (foreign_keys
+// is per-connection; journal_mode=WAL is persistent but harmless to re-assert).
+const connPragmas = `
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 PRAGMA foreign_keys=ON;
+`
+
+// baselineSchema is the v1 (schema version 0) shape. It is CREATE ... IF NOT
+// EXISTS so it is a no-op on any existing database and just seeds a fresh one;
+// the migrations below then transform it. Never change a column here — that's
+// what migrations are for; this only has to create v1 tables for new hubs.
+const baselineSchema = `
 CREATE TABLE IF NOT EXISTS devices (
   id        TEXT PRIMARY KEY,
   name      TEXT NOT NULL,
@@ -56,21 +68,124 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 `
 
+// migrations are ordered, append-only schema transforms. migrations[i] upgrades
+// the database from PRAGMA user_version i to i+1, each in its own transaction
+// with the user_version bump as the LAST statement — so a crash mid-migration
+// rolls the whole step back (the version only advances once the step committed).
+// v1 is version 0 (baselineSchema, no migration); the first v2 step takes it to 1.
+// NEVER edit or reorder a shipped entry — only append. A database whose version
+// exceeds len(migrations) is refused (a newer devbox wrote it).
+var migrations = []string{
+	// 1 (v2): re-key snapshots from a GLOBAL `id` PK to per-`(share, id)`. v1's
+	// global id meant identical content pushed to two shares collided on the same
+	// snapshot row, so the second share's chunk refcounts were never counted
+	// (undercount). Per-share rows let each share account its own chunks. The wire
+	// `id`/Head value stays the manifest hash, so the client contract is unchanged.
+	`
+CREATE TABLE snapshots_v2 (
+  share         TEXT NOT NULL,
+  id            TEXT NOT NULL,
+  parent_id     TEXT,
+  device_id     TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  PRIMARY KEY (share, id)
+);
+INSERT INTO snapshots_v2 (share, id, parent_id, device_id, created_at, manifest_hash)
+  SELECT share, id, parent_id, device_id, created_at, manifest_hash FROM snapshots;
+DROP TABLE snapshots;
+ALTER TABLE snapshots_v2 RENAME TO snapshots;
+-- Re-establish the per-share invariant the v1 idempotent push violated: every
+-- non-empty share head must have its OWN snapshot row. The old global PK recorded
+-- shared content under just the first share, so a share that reverted/re-pushed
+-- another share's content has a head with no local row. Copy one from wherever the
+-- id was recorded (parent/device/time are informational for log/restore).
+INSERT OR IGNORE INTO snapshots (share, id, parent_id, device_id, created_at, manifest_hash)
+  SELECT s.name, s.head_snapshot, src.parent_id, src.device_id, src.created_at, src.manifest_hash
+  FROM shares s
+  JOIN snapshots src ON src.id = s.head_snapshot
+  WHERE s.head_snapshot IS NOT NULL AND s.head_snapshot != ''
+    AND NOT EXISTS (SELECT 1 FROM snapshots o WHERE o.share = s.name AND o.id = s.head_snapshot);
+`,
+}
+
 // DB is the hub metadata store.
 type DB struct{ sql *sql.DB }
 
 // Open opens (and migrates) the SQLite database at path. Use ":memory:" in tests.
+// An existing on-disk database is backed up to "<path>.pre-v2.bak" before any
+// pending migration runs, and a database written by a newer devbox is refused.
 func Open(path string) (*DB, error) {
+	// Note whether a real database already exists, so we only spend a backup on
+	// upgrades that have data to protect (a fresh hub has nothing to lose).
+	preexisting := false
+	if path != "" && path != ":memory:" {
+		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+			preexisting = true
+		}
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // ponytail: single-writer; SQLite serializes anyway
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(connPragmas); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(baselineSchema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrate(db, path, preexisting); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &DB{sql: db}, nil
+}
+
+// migrate applies every pending migration in order, each in its own transaction
+// ending with the user_version bump (so a crash rolls a half-applied step back).
+// It refuses a database whose version is beyond what this build knows about.
+func migrate(db *sql.DB, path string, preexisting bool) error {
+	var cur int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&cur); err != nil {
+		return err
+	}
+	if cur > len(migrations) {
+		return fmt.Errorf("hub database is schema version %d but this devbox supports up to %d — upgrade devbox", cur, len(migrations))
+	}
+	if cur == len(migrations) {
+		return nil // already current
+	}
+	if preexisting {
+		bak := path + ".pre-v2.bak"
+		_ = os.Remove(bak)
+		// VACUUM INTO writes a consistent snapshot of the live DB; it cannot run in
+		// a transaction and won't take a bound parameter, so quote the path inline.
+		if _, err := db.Exec(`VACUUM INTO '` + strings.ReplaceAll(bak, "'", "''") + `'`); err != nil {
+			return fmt.Errorf("pre-migration backup to %s: %w", bak, err)
+		}
+	}
+	for i := cur; i < len(migrations); i++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration to version %d: %w", i+1, err)
+		}
+		// user_version can't be parameterized; i+1 is an internal int, never input.
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("set user_version %d: %w", i+1, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", i+1, err)
+		}
+	}
+	return nil
 }
 
 // Close closes the database.
@@ -235,10 +350,12 @@ func (d *DB) AddSnapshot(s Snapshot, chunks []ChunkRef) error {
 	defer tx.Rollback()
 
 	// Snapshots are content-addressed, so re-pushing an unchanged tree (or
-	// reverting to a prior state) replays an existing id. That's idempotent:
-	// advance the head to it, but never re-insert or double-count chunk refs.
+	// reverting to a prior state) replays an existing id within THIS share. That's
+	// idempotent: advance the head to it, but never re-insert or double-count chunk
+	// refs. Keyed by (share, id): the same content in another share is a distinct
+	// snapshot that must record its own row and count its own chunks.
 	var one int
-	switch err := tx.QueryRow(`SELECT 1 FROM snapshots WHERE id=?`, s.ID).Scan(&one); {
+	switch err := tx.QueryRow(`SELECT 1 FROM snapshots WHERE share=? AND id=?`, s.Share, s.ID).Scan(&one); {
 	case err == nil:
 		if _, err := tx.Exec(`UPDATE shares SET head_snapshot=? WHERE name=?`, s.ID, s.Share); err != nil {
 			return err
@@ -360,16 +477,18 @@ func (d *DB) DeletableSnapshots(share string, keep int) ([]string, error) {
 	return del, rows.Err()
 }
 
-// DeleteSnapshot removes a snapshot row and decrements the refcount of each
-// distinct chunk hash it referenced, all in one transaction. The caller derives
-// chunkHashes from the snapshot's manifest (distinct, as AddSnapshot counted them).
-func (d *DB) DeleteSnapshot(id string, chunkHashes []string) error {
+// DeleteSnapshot removes one share's snapshot row and decrements the refcount of
+// each distinct chunk hash it referenced, all in one transaction. The caller
+// derives chunkHashes from the snapshot's manifest (distinct, as AddSnapshot
+// counted them). Keyed by (share, id): pruning one share's copy of shared content
+// leaves another share's snapshot (and its refcounts) intact.
+func (d *DB) DeleteSnapshot(share, id string, chunkHashes []string) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`DELETE FROM snapshots WHERE id=?`, id)
+	res, err := tx.Exec(`DELETE FROM snapshots WHERE share=? AND id=?`, share, id)
 	if err != nil {
 		return err
 	}
