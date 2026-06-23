@@ -7,8 +7,8 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%8E%89%20v1%20complete%20%C2%B7%20M0%E2%80%93M7%20%E2%9C%85-brightgreen?style=for-the-badge)
-![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
+![status](https://img.shields.io/badge/status-%F0%9F%9B%A1%EF%B8%8F%20v1%20%C2%B7%20audited%20%2B%20hardened-brightgreen?style=for-the-badge)
+![language](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
 
@@ -46,6 +46,8 @@
 > | M6 — Versioning: `log` / `restore` + hub GC | ✅ done — restore reverted a file on the fleet 🕰️ |
 > | M6.5 — `devbox deploy` (pin a mount to a snapshot, no push) | ✅ done — **blue/green-deployed v1 on a real box while head stayed v2** 🚀 |
 > | M7 — Hardening: `devbox doctor`, reconnect/backoff, rescan fallback, name-clash, release builds | ✅ done — **doctor/stop/hooks + share-name guard + dead-watcher rescan fleet-verified** 🛡️ |
+> | M7.5 — Adversarial security/data-loss audit + fixes (path-traversal, blob integrity, never-clobber, safe GC) | ✅ done — **26 findings, all promise-breakers fixed, race-clean** 🔐 |
+> | M7.6 — Hardening: fsync durability · DoS caps + timeouts · pidfile PID-reuse guard · join proof-of-possession | ✅ done — fleet-verified on arm64 🛡️ |
 
 ---
 
@@ -56,8 +58,8 @@
 | 🤔 [Why devbox?](#-why-devbox) | 🧠 [Core Concepts](#-core-concepts) | 🏗️ [Architecture](#%EF%B8%8F-architecture) |
 | 🔄 [How Sync Works](#-how-sync-works) | 💥 [Conflicts](#-conflicts-never-lose-a-byte) | 🚀 [Quick Start](#-quick-start) |
 | 🧰 [CLI Reference](#-cli-reference) | 🪝 [Hooks](#-hooks) | 🙈 [.devignore & Secrets](#-devignore--secret-guard) |
-| 🕰️ [Versioning & Deploy](#%EF%B8%8F-versioning--deploy) | 🖥️ [Cross-Platform](#%EF%B8%8F-cross-platform) | 🗺️ [Roadmap](#%EF%B8%8F-roadmap) |
-| ⚖️ [License & Open-Core](#%EF%B8%8F-license--open-core) | 🙌 [Contributing](#-contributing) | |
+| 🕰️ [Versioning & Deploy](#%EF%B8%8F-versioning--deploy) | 🖥️ [Cross-Platform](#%EF%B8%8F-cross-platform) | 🔐 [Security & Durability](#-security--durability) |
+| 🗺️ [Roadmap](#%EF%B8%8F-roadmap) | ⚖️ [License & Open-Core](#%EF%B8%8F-license--open-core) | 🙌 [Contributing](#-contributing) |
 
 ---
 
@@ -450,6 +452,45 @@ gitGraph
 > Filenames illegal/colliding on an OS (`foo.go` vs `Foo.go`, `aux`, trailing dot) → **skip +
 > warn + surface** in `devbox status`; the hub keeps the bytes, peers that *can* hold the name
 > still get the file. Never fatal. 🛟
+
+---
+
+## 🔐 Security & Durability
+
+> Threat model: **single-owner, multi-device** (every enrolled device is *yours*). Within that,
+> v1 went through an adversarial audit — every data-loss and arbitrary-file path is closed. 🛡️
+
+| Layer | Protection |
+|---|---|
+| 🪪 **Device identity** | ed25519 keypair per device; `join` requires **proof-of-possession** (a signed challenge — you can't claim a key you don't hold), and a bad request never burns the one-time token |
+| 🎟️ **Auth** | bearer tokens, **hashed at rest** (hub stores no plaintext creds), device-**revocable** |
+| 🧊 **Content integrity** | every chunk **and** manifest is re-verified against its BLAKE3 hash on download — a corrupt/truncated transfer or hostile hub can't write wrong bytes into your tree |
+| 🚧 **Path safety** | hub rejects any blob key that isn't 64-hex (no `..%2f` traversal → no arbitrary file read); the client refuses manifest paths that escape the mount root |
+| 🔑 **Secret guard** | case-insensitive deny-list (`.ENV` == `.env`); `.env`/keys/`*.env`/`.aws/credentials` **never leave the machine**, independent of `.devignore` |
+| 🛟 **Never lose a byte** | losing local edits become `.conflict` copies; ignored/guarded on-disk files are preserved **before** any hub overwrite; atomic writes are **fsync'd** (power-loss safe) |
+| 🧹 **Safe GC** | mark-and-sweep from every live head — never frees a chunk a share still needs, even if refcounts are off |
+| 🚪 **DoS bounds** | request-body caps (256 MiB blob / 8 MiB JSON → `413`) + server read/idle timeouts |
+| 🆔 **Daemon** | single-instance pidfile with a **PID-reuse guard** (start-time token) so `stop` never signals a stranger |
+
+<details>
+<summary>🔬 how the integrity + path guards chain</summary>
+
+```mermaid
+flowchart LR
+    P["📥 pull"] --> G{"64-hex<br/>blob key?"}
+    G -->|no| X1["🚫 404 — no traversal"]
+    G -->|yes| F["⬇️ fetch blob"]
+    F --> H{"BLAKE3<br/>matches key?"}
+    H -->|no| X2["🚫 integrity fail"]
+    H -->|yes| C{"path inside<br/>mount?"}
+    C -->|no| X3["🚫 refuse escape"]
+    C -->|yes| W["⚛️ atomic write + fsync"]
+    style X1 fill:#5a1e1e,stroke:#ff6b6b,color:#fff
+    style X2 fill:#5a1e1e,stroke:#ff6b6b,color:#fff
+    style X3 fill:#5a1e1e,stroke:#ff6b6b,color:#fff
+    style W fill:#1e5a2e,stroke:#51cf66,color:#fff
+```
+</details>
 
 ---
 
