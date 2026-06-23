@@ -7,7 +7,7 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M3-yellow?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%94%A8%20building%20%C2%B7%20M4-yellow?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)
@@ -40,8 +40,9 @@
 > | M0 — Skeleton (CLI, identity, config) | ✅ done |
 > | M1 — Watch · `.devignore` · secret-guard · chunking · manifest | ✅ done |
 > | M2 — Hub + one-way push (deployed + verified cross-machine 🛰️) | ✅ done |
-> | M3 — Two-way sync (WebSocket fan-out, pull, conflicts) | 🔨 building |
-> | M4+ | ⬜ design complete, not started |
+> | M3 — Two-way sync · SSE fan-out · 3-way conflict copies · live daemon | ✅ done — **two real Macs sync live through the hub** 🔄 |
+> | M4 — Read-only mounts + bandwidth cap | 🔨 building |
+> | M5+ | ⬜ design complete, not started |
 
 ---
 
@@ -274,18 +275,22 @@ The offline edit is **never lost** — it just lands as a clearly-named sibling.
 > 🚧 *Design preview — these commands describe v1, not a shipping binary yet.*
 
 ```bash
-# 🛰️  On your hub (Pi / TrueNAS)
-devbox-hub serve --config /etc/devbox-hub.toml
-devbox-hub token                       # prints a join token  →  J0IN-7QF2-K9XR
+# 🛰️  On your hub (Pi / TrueNAS / NAS)
+devbox-hub serve --data /srv/devbox --listen 0.0.0.0:8088
+devbox-hub token                                # prints a one-time join token
 
-# 💻  On each device
-devbox join hub.shoemoney.ai J0IN-7QF2-K9XR     # enroll this machine
+# 💻  On your laptop
+devbox join http://hub.lan:8088 <token>         # enroll this machine
 devbox publish ~/Projects projects              # create a share from a folder
-devbox start                                    # run the daemon
+devbox start                                    # live-sync daemon (foreground)
 
-# 🍓  On a Pi node — mount just one backend, read-only, somewhere else
-devbox join hub.shoemoney.ai J0IN-7QF2-K9XR
-devbox -r projects/p22/backend /var/www/p22/backend
+# 🍓  On another machine — clone the share and keep it in sync
+devbox join http://hub.lan:8088 <token>
+devbox mount projects ~/Projects                # clone + register the mount
+devbox start
+
+# 🚀  A read-only deploy box — pulls, never pushes its runtime cruft back up
+devbox mount api /var/www/api --ro
 devbox start
 ```
 
@@ -303,9 +308,9 @@ container automatically. 🪄
 | Command | What it does |
 |---|---|
 | `devbox join <hub> <token>` | 🎟️ Enroll this device against a hub |
-| `devbox -rw <share>[/sub] [path]` | 🔗 Mount a share/sub-path **read-write** (default `./<name>`) |
-| `devbox -r <share>[/sub] [path]` | 🔒 Mount **read-only** |
-| `devbox publish <dir> <name>` | 📂 Create a share from a local folder |
+| `devbox mount <share> <dir>` | 🔗 Mount a share into a local dir (clone + sync) |
+| `devbox mount <share> <dir> --ro` | 🔒 Mount **read-only** (pull only, never push) |
+| `devbox publish <dir> <name>` | 📂 Create a share from a local folder + push it |
 | `devbox unmount <share>` | ⏏️ Stop syncing a mount (files stay on disk) |
 | `devbox start` / `stop` | ▶️⏹️ Run / stop the daemon |
 | `devbox status` | 📊 Shares, mounts, peers, conflicts, blocked secrets |
@@ -460,7 +465,8 @@ flowchart LR
     style M0 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M1 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style M2 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style M3 fill:#4F9CF9,color:#fff
+    style M3 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style M4 fill:#4F9CF9,color:#fff
 ```
 
 | | Milestone | Deliverable |
@@ -468,7 +474,8 @@ flowchart LR
 | ✅ | **M0 — Skeleton** 🦴 | cobra CLI, `devbox join`, keypair, machine config |
 | ✅ | **M1 — Watch + secrets** 👀 | fsnotify, `.devignore`, secret-guard, FastCDC+BLAKE3 chunking, content-addressed manifests |
 | ✅ | **M2 — Hub + push** 🛰️ | shares, join tokens, CAS, `publish`, HTTP upload, snapshots, bearer auth, `/metrics` — deployed on `.10`, verified cross-machine |
-| 🔨 | **M3 — Two-way sync** 🔄 | WS events + HTTP blobs, mount/pull, atomic apply, conflict copies |
+| ✅ | **M3 — Two-way sync** 🔄 | SSE event fan-out, `mount`, pull + atomic apply, per-file 3-way conflict copies, live `start` daemon — **two Macs sync live through the hub** |
+| 🔨 | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
 | ⬜ | **M4 — Read-only + bw** 🔒 | server-enforced read-only bit, sub-path mounts, bandwidth cap |
 | ⬜ | **M5 — Hooks** 🪝 | bash/`.ps1` runner, templates, env, timeout |
 | ⬜ | **M6 — Versioning** 🕰️ | `log` / `restore`, hub GC |
