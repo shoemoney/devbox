@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"git.shoemoney.ai/shoemoney/devbox/internal/control"
 	"git.shoemoney.ai/shoemoney/devbox/internal/daemon"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
 	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
@@ -52,6 +53,8 @@ func main() {
 		conflictsCmd(),
 		startCmd(),
 		stopCmd(),
+		pauseCmd(),
+		resumeCmd(),
 		statusCmd(),
 		doctorCmd(),
 		versionCmd(),
@@ -618,6 +621,36 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("reading config: %w", err)
 			}
+
+			// Prefer the LIVE daemon when it's running AND stdout is a terminal:
+			// the socket can show paused state and the applied snapshot, which disk
+			// can't. Piped/non-TTY output must stay byte-identical to v1 (scripts
+			// parse it), so the enrichment is gated behind isTTY — the disk path is
+			// the unchanged v1 output.
+			if isTTY(cmd) {
+				if live, err := control.DialState(dir); err == nil {
+					fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
+					fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
+					paused := ""
+					if live.Paused {
+						paused = " ⏸️  PAUSED"
+					}
+					fmt.Fprintf(out, "mounts:  %d (live)%s\n", len(live.Mounts), paused)
+					for _, m := range live.Mounts {
+						mode := "rw"
+						if m.ReadOnly {
+							mode = "ro"
+						}
+						if m.Pinned {
+							mode += ",pinned"
+						}
+						fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s\n",
+							m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)))
+					}
+					return nil
+				}
+			}
+
 			fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
 			fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
 			fmt.Fprintf(out, "mounts:  %d\n", len(d.Mounts))
