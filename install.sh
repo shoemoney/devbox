@@ -144,9 +144,13 @@ install_service_macos() {
 </dict></plist>
 PLIST
   launchctl unload "$plist" 2>/dev/null || true
-  launchctl load "$plist"
-  say "   ✅ launchd agent loaded (KeepAlive). logs: ~/Library/Logs/devbox.log"
-  say "      stop: launchctl unload $plist"
+  if launchctl load "$plist" 2>/dev/null; then
+    say "   ✅ launchd agent loaded (KeepAlive). logs: ~/Library/Logs/devbox.log"
+    say "      stop: launchctl unload $plist"
+  else
+    say "   ⚠️  wrote $plist but 'launchctl load' failed (run it from a desktop session, not SSH):"
+    say "      launchctl load $plist"
+  fi
 }
 
 install_service_linux() {
@@ -166,14 +170,15 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 UNIT
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user daemon-reload
-    systemctl --user enable --now devbox.service
+  if command -v systemctl >/dev/null 2>&1 &&
+     systemctl --user daemon-reload 2>/dev/null &&
+     systemctl --user enable --now devbox.service 2>/dev/null; then
     loginctl enable-linger "$USER" 2>/dev/null || say "   (run 'sudo loginctl enable-linger $USER' so it starts before login)"
     say "   ✅ systemd user service enabled (Restart=always). logs: journalctl --user -u devbox -f"
     say "      stop: systemctl --user disable --now devbox"
   else
-    say "   wrote $unit — no systemd here; start manually with: $DEVBOX start"
+    say "   ⚠️  wrote $unit, but couldn't enable it via 'systemctl --user' (no user session bus is"
+    say "      common over headless SSH). Enable from a desktop login: systemctl --user enable --now devbox"
   fi
 }
 

@@ -18,6 +18,9 @@ FROM alpine:3.20
 # ca-certificates + tzdata for correct TLS/timestamps; wget (busybox) backs the healthcheck.
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 devbox
 COPY --from=build /out/devbox-hub /usr/local/bin/devbox-hub
+# Own /data BEFORE declaring the volume + dropping root, so the non-root user can
+# write the sqlite DB + blobs (a named volume inherits the image dir's ownership).
+RUN mkdir -p /data && chown devbox:devbox /data
 USER devbox
 VOLUME /data
 # 8088 = hub API · 8099 = live dashboard (only reachable if you enable --dashboard)
