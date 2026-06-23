@@ -118,7 +118,23 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 			}
 
 		case tOK && !oOK:
-			// Ours deleted, hub edited: hub wins (a delete has no bytes to keep).
+			// p is absent from `ours` — but `ours` is .devignore/secret-guard
+			// FILTERED, so this is NOT necessarily a local delete. The file may
+			// still be on disk with valuable content (an ignored config, or the
+			// very .env/key the guard protects). Overwriting it blindly is data
+			// loss — exactly the bytes we promised never to lose. So if the path
+			// really exists on disk, preserve it as a conflict copy first; only a
+			// genuinely-absent path is a true delete where the hub wins.
+			if dst, jerr := safeJoin(root, p); jerr == nil {
+				if _, statErr := os.Stat(dst); statErr == nil {
+					cp, cerr := preserveAsConflict(root, p, host, now)
+					if cerr != nil {
+						res.Skipped = append(res.Skipped, p) // couldn't preserve; never clobber
+						continue
+					}
+					res.Conflicts = append(res.Conflicts, cp)
+				}
+			}
 			if fsErr, err := writeEntry(c, root, te); err != nil {
 				if !fsErr {
 					return PullResult{}, err
