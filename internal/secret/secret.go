@@ -11,6 +11,8 @@ import "git.shoemoney.ai/shoemoney/devbox/internal/ignore"
 var DefaultPatterns = []string{
 	".env",
 	".env.*",
+	"*.env", // prod.env / config.env conventions hold the same creds as .env
+	".envrc",
 	"!.env.example",
 	"*.pem",
 	"*.key",
@@ -23,8 +25,8 @@ var DefaultPatterns = []string{
 	"id_ecdsa*",
 	"id_ed25519*",
 	"secrets/",
-	".aws/credentials",
-	".ssh/id_*",
+	"**/.aws/credentials", // not just at root — a nested copy is just as sensitive
+	"**/.ssh/id_*",
 }
 
 // Guard decides whether a path must never be uploaded.
@@ -35,7 +37,7 @@ func New(extra []string) (*Guard, error) {
 	pats := make([]string, 0, len(DefaultPatterns)+len(extra))
 	pats = append(pats, DefaultPatterns...)
 	pats = append(pats, extra...)
-	m, err := ignore.Compile(pats)
+	m, err := ignore.CompileFold(pats) // secrets block case-insensitively (.ENV == .env)
 	if err != nil {
 		return nil, err
 	}

@@ -19,11 +19,20 @@ type rule struct {
 	dirOnly bool
 }
 
-// Compile parses the lines of a .devignore file into a Matcher.
-func Compile(patterns []string) (*Matcher, error) {
+// Compile parses the lines of a .devignore file into a Matcher (case-sensitive,
+// matching gitignore semantics).
+func Compile(patterns []string) (*Matcher, error) { return compile(patterns, false) }
+
+// CompileFold is like Compile but matches case-insensitively. It exists for the
+// secret guard: on case-insensitive filesystems (macOS/Windows) a file literally
+// named .ENV / KEY.PEM / ID_RSA is the same secret as .env / key.pem / id_rsa and
+// must also be blocked. .devignore keeps using Compile (case-sensitive).
+func CompileFold(patterns []string) (*Matcher, error) { return compile(patterns, true) }
+
+func compile(patterns []string, fold bool) (*Matcher, error) {
 	m := &Matcher{}
 	for _, p := range patterns {
-		r, ok, err := compilePattern(p)
+		r, ok, err := compilePattern(p, fold)
 		if err != nil {
 			return nil, err
 		}
@@ -34,7 +43,7 @@ func Compile(patterns []string) (*Matcher, error) {
 	return m, nil
 }
 
-func compilePattern(line string) (rule, bool, error) {
+func compilePattern(line string, fold bool) (rule, bool, error) {
 	// Trim trailing whitespace; gitignore keeps leading whitespace literal.
 	line = strings.TrimRight(line, " \t\r\n")
 	if line == "" || strings.HasPrefix(line, "#") {
@@ -56,7 +65,11 @@ func compilePattern(line string) (rule, bool, error) {
 	anchored := strings.Contains(line, "/")
 	line = strings.TrimPrefix(line, "/")
 
-	re, err := regexp.Compile(buildRegex(line, anchored))
+	expr := buildRegex(line, anchored)
+	if fold {
+		expr = "(?i)" + expr // case-insensitive match (secret guard only)
+	}
+	re, err := regexp.Compile(expr)
 	if err != nil {
 		return rule{}, false, err
 	}
