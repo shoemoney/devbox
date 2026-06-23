@@ -1,0 +1,7 @@
+.devbox/
+blobs/
+*.db
+*.db-wal
+*.db-shm
+/dist/
+/bin/
