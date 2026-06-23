@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
@@ -133,6 +134,12 @@ func (c *Client) GetBlob(hash string) ([]byte, error) {
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, apiError(resp.StatusCode, body)
+	}
+	// Blobs (chunks and manifests) are content-addressed: the key is BLAKE3 of the
+	// bytes. Verify it so a corrupt/truncated transfer or a buggy/malicious hub
+	// can't write wrong content into the user's tree undetected.
+	if chunk.Hash(body) != hash {
+		return nil, fmt.Errorf("devbox: blob %s failed integrity check (got %s)", hash, chunk.Hash(body))
 	}
 	return body, nil
 }

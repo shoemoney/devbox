@@ -340,7 +340,10 @@ func writeEntry(c *transport.Client, root string, e manifest.Entry) (fsErr bool,
 		}
 		buf = append(buf, b...)
 	}
-	dst := filepath.Join(root, filepath.FromSlash(e.Path))
+	dst, serr := safeJoin(root, e.Path)
+	if serr != nil {
+		return true, serr // unsafe manifest path: skip it, don't apply outside root
+	}
 	if merr := os.MkdirAll(filepath.Dir(dst), 0o755); merr != nil {
 		return true, merr
 	}
@@ -355,11 +358,28 @@ func writeEntry(c *transport.Client, root string, e manifest.Entry) (fsErr bool,
 }
 
 func deleteFile(root, relPath string) error {
-	err := os.Remove(filepath.Join(root, filepath.FromSlash(relPath)))
+	p, serr := safeJoin(root, relPath)
+	if serr != nil {
+		return serr
+	}
+	err := os.Remove(p)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// safeJoin joins a hub-supplied, slash-separated relative path under root,
+// refusing anything that would escape the mount (absolute path, "..", empty, or
+// a Windows reserved name). Manifest paths come from the hub/peers and are
+// applied to the local filesystem, so an unchecked "../../.ssh/authorized_keys"
+// would let a malicious or buggy hub write or delete files outside the mount.
+func safeJoin(root, relPath string) (string, error) {
+	clean := filepath.FromSlash(relPath)
+	if !filepath.IsLocal(clean) {
+		return "", fmt.Errorf("refusing unsafe manifest path %q", relPath)
+	}
+	return filepath.Join(root, clean), nil
 }
 
 // preserveAsConflict renames the current local file at relPath to a sibling named
