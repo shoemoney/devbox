@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,9 +16,23 @@ import (
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
+	"git.shoemoney.ai/shoemoney/devbox/internal/hub/dashboard"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
 	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
 )
+
+// isLoopback reports whether addr binds only to a loopback interface.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 var version = "0.0.0-dev"
 
@@ -57,7 +72,8 @@ func openDB(data string) (*meta.DB, error) {
 }
 
 func serveCmd() *cobra.Command {
-	var data, listen string
+	var data, listen, dashAddr string
+	var dash bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "🚀 run the hub server",
@@ -71,7 +87,26 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 			srv := hub.NewServer(db, store)
-			fmt.Fprintf(cmd.OutOrStdout(), "🛰️  devbox-hub listening on %s (data: %s)\n", listen, data)
+			out := cmd.OutOrStdout()
+
+			// Optional live dashboard on its own address (localhost by default so it
+			// never widens the API surface; it's unauthenticated read-only metrics).
+			if dash {
+				d := dashboard.New(db, version)
+				srv.WithDashboard(d)
+				if !isLoopback(dashAddr) {
+					fmt.Fprintf(out, "⚠️  dashboard on %s is UNAUTHENTICATED and not loopback — anyone who can reach it sees hub activity. SSH-tunnel instead, or you accept this.\n", dashAddr)
+				}
+				go func() {
+					ds := &http.Server{Addr: dashAddr, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
+					fmt.Fprintf(out, "📊 dashboard live at http://%s\n", dashAddr)
+					if err := ds.ListenAndServe(); err != nil {
+						fmt.Fprintf(out, "dashboard server stopped: %v\n", err)
+					}
+				}()
+			}
+
+			fmt.Fprintf(out, "🛰️  devbox-hub listening on %s (data: %s)\n", listen, data)
 			// Explicit timeouts bound the slowloris surface (bare ListenAndServe
 			// has none). No WriteTimeout on purpose: the /v1/events SSE stream is
 			// long-lived and a WriteTimeout would kill it mid-flight.
@@ -88,6 +123,8 @@ func serveCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
 	cmd.Flags().StringVar(&listen, "listen", ":8080", "listen address")
+	cmd.Flags().BoolVar(&dash, "dashboard", false, "serve the live web dashboard")
+	cmd.Flags().StringVar(&dashAddr, "dashboard-addr", "127.0.0.1:8099", "dashboard listen address (loopback by default — unauthenticated)")
 	return cmd
 }
 

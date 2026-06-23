@@ -826,6 +826,79 @@ func (d *DB) SnapshotIDs(share string) ([]string, error) {
 	return d.queryStrings(`SELECT id FROM snapshots WHERE share=?`, share)
 }
 
+// --- dashboard reads ------------------------------------------------------
+
+// DeviceRow is a device's detail for the dashboard.
+type DeviceRow struct {
+	ID        string
+	Name      string
+	Principal string
+	LastSeen  int64
+	Revoked   bool
+}
+
+// Devices lists every device with detail (newest-name order), for the dashboard.
+func (d *DB) Devices() ([]DeviceRow, error) {
+	rows, err := d.sql.Query(`SELECT id, name, COALESCE(last_seen,0), revoked, principal_id FROM devices ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeviceRow
+	for rows.Next() {
+		var r DeviceRow
+		var revoked int
+		if err := rows.Scan(&r.ID, &r.Name, &r.LastSeen, &revoked, &r.Principal); err != nil {
+			return nil, err
+		}
+		r.Revoked = revoked != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ShareStat is a share's rolled-up detail for the dashboard.
+type ShareStat struct {
+	Name      string
+	Head      string
+	ACLMode   string
+	Snapshots int
+	Members   int
+	UpdatedAt int64 // newest snapshot time
+}
+
+// ShareStats rolls up per-share counts for the dashboard in one query.
+func (d *DB) ShareStats() ([]ShareStat, error) {
+	rows, err := d.sql.Query(`
+		SELECT s.name, COALESCE(s.head_snapshot,''), s.acl_mode,
+		       (SELECT COUNT(*) FROM snapshots sn WHERE sn.share=s.name),
+		       (SELECT COUNT(*) FROM members m  WHERE m.share=s.name),
+		       COALESCE((SELECT MAX(created_at) FROM snapshots sn WHERE sn.share=s.name),0)
+		FROM shares s ORDER BY s.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ShareStat
+	for rows.Next() {
+		var s ShareStat
+		if err := rows.Scan(&s.Name, &s.Head, &s.ACLMode, &s.Snapshots, &s.Members, &s.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SumChunkBytes returns the total size of all stored chunks (0 if none).
+func (d *DB) SumChunkBytes() (int64, error) {
+	var n sql.NullInt64
+	if err := d.sql.QueryRow(`SELECT SUM(size) FROM chunks`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n.Int64, nil
+}
+
 func (d *DB) queryStrings(query string, args ...any) ([]string, error) {
 	rows, err := d.sql.Query(query, args...)
 	if err != nil {

@@ -18,6 +18,7 @@ import (
 
 	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
+	"git.shoemoney.ai/shoemoney/devbox/internal/hub/dashboard"
 	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
 	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
@@ -36,13 +37,17 @@ type Server struct {
 	db        *meta.DB
 	store     blobstore.Store
 	broker    *broker
-	publishMu sync.Mutex // serializes publish so the case-clash check + create is atomic
+	dash      *dashboard.Dashboard // optional live dashboard; nil = disabled (Emit is nil-safe)
+	publishMu sync.Mutex           // serializes publish so the case-clash check + create is atomic
 }
 
 // NewServer builds a hub server over the given metadata store and blob store.
 func NewServer(db *meta.DB, store blobstore.Store) *Server {
 	return &Server{db: db, store: store, broker: newBroker()}
 }
+
+// WithDashboard attaches a live dashboard so the hub emits flow events to it.
+func (s *Server) WithDashboard(d *dashboard.Dashboard) *Server { s.dash = d; return s }
 
 // HashToken returns hex(sha256(token)); the token-mint CLI reuses it so the hub
 // only ever stores token hashes, never the tokens themselves.
@@ -156,7 +161,16 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.dash.Emit(dashboard.Event{Type: "join", Device: deviceID, DeviceName: req.Name})
 	writeJSON(w, http.StatusOK, proto.JoinResponse{DeviceID: deviceID, Bearer: bearer})
+}
+
+// shortID truncates a content hash for the dashboard's compact event payloads.
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 // handleInvite mints an invite token for a share (M8a). The caller's effective
@@ -411,9 +425,18 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 	// Only announce a genuine head advance. An idempotent re-push (manifest ==
 	// current head) must NOT broadcast, or daemons would storm: pull -> re-push
 	// the same state -> broadcast -> pull -> ... forever.
-	if req.ManifestHash != head {
+	advanced := req.ManifestHash != head
+	if advanced {
 		s.broker.publish(proto.Event{Share: req.Share, Snapshot: snapshotID})
 	}
+	var bytes int64
+	for _, c := range chunks {
+		bytes += c.Size
+	}
+	s.dash.Emit(dashboard.Event{
+		Type: "push", Device: deviceID, Share: req.Share,
+		Bytes: bytes, Chunks: len(chunks), Snapshot: shortID(snapshotID), NewHead: advanced,
+	})
 	writeJSON(w, http.StatusOK, proto.PushResponse{Snapshot: snapshotID, Head: snapshotID, Conflict: false})
 }
 
