@@ -19,6 +19,14 @@ import (
 	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
 )
 
+// rescanInterval is the safety-net cadence for re-syncing a mount even when no
+// trigger fired. It backstops a watcher that never started (e.g. inotify
+// max_user_watches exhausted on a big Pi tree) or an event that slipped through:
+// without it, such a mount would stop pushing local edits entirely. PRD risk #1.
+// ponytail: fixed 60s; promote to a Settings knob only if a huge tree makes the
+// periodic manifest rebuild measurably costly.
+const rescanInterval = 60 * time.Second
+
 // Daemon syncs a device's mounts against their hub.
 type Daemon struct {
 	dir            string
@@ -110,9 +118,10 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 		}
 	}
 
-	// Local filesystem changes -> sync.
+	// Local filesystem changes -> sync. If the watcher can't start (e.g. inotify
+	// limit), we don't bail: the periodic rescan below keeps the mount syncing.
 	if w, err := watch.New(m.Local, 300*time.Millisecond); err != nil {
-		d.logf("watch %s: %v", m.Local, err)
+		d.logf("watch %s: %v — falling back to %s rescans (run: devbox doctor)", m.Local, err, rescanInterval)
 	} else {
 		defer w.Close()
 		go func() {
@@ -148,6 +157,21 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 			case <-ctx.Done():
 				return
 			case <-time.After(wait):
+			}
+		}
+	}()
+
+	// Periodic rescan: safety net so the mount keeps converging even if the
+	// watcher never started (inotify limit) or an event was missed.
+	go func() {
+		t := time.NewTicker(rescanInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				nudge()
 			}
 		}
 	}()
