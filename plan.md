@@ -2,7 +2,7 @@
 
 # 🗺️ devbox — What's Next (PRD)
 
-![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20P1%20shipped%20%C2%B7%20P2%20next-blueviolet?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20P1%2BP2%20shipped%20%C2%B7%20P3%20next-blueviolet?style=for-the-badge)
 ![base](https://img.shields.io/badge/builds_on-v1%20hardened%20%C2%B7%20v2%20M8%20shipped-00ADD8?style=for-the-badge)
 ![release](https://img.shields.io/badge/release-%F0%9F%93%A6%20latest%20live-success?style=for-the-badge)
 ![public](https://img.shields.io/badge/github-%F0%9F%8C%8D%20public%20%C2%B7%20AGPLv3-181717?style=for-the-badge)
@@ -28,13 +28,13 @@ clean two-scanner git-history secret sweep. Verified end-to-end on clean no-Go a
 ```mermaid
 flowchart LR
     NOW["✅ adoption tooling<br/>installers · docker · dashboard"] --> P1["✅ P1<br/>Releases + CI<br/>+ public repo"]
-    P1 --> P2["🔨 P2<br/>M8a auth audit"]
-    P2 --> P3["🥉 P3<br/>dashboard depth"]
+    P1 --> P2["✅ P2<br/>M8a auth audit<br/>2 fixes + tests"]
+    P2 --> P3["🔨 P3<br/>dashboard depth"]
     P3 -.demand-driven.-> LATER["🔮 M9–M11<br/>E2E · P2P · HA · TUI"]
     style NOW fill:#1e5a2e,stroke:#51cf66,color:#fff
     style P1 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style P2 fill:#5a4a1e,stroke:#ffd43b,color:#fff
-    style P3 fill:#1e3a5a,stroke:#4F9CF9,color:#fff
+    style P2 fill:#1e5a2e,stroke:#51cf66,color:#fff
+    style P3 fill:#5a4a1e,stroke:#ffd43b,color:#fff
     style LATER fill:#0d1117,stroke:#4F9CF9,color:#fff
 ```
 
@@ -68,19 +68,21 @@ the v2 codebase the **regression safety** it lacked.
 principal binding on join, token handling. It has unit + HTTP + fleet tests, but no dedicated *adversarial* pass.
 This is the M7.5 treatment for v2's new attack surface, **before** anyone relies on it for multi-owner shares.
 
-**Scope (hunt for, with regression tests for each real finding)**
-- [ ] **Invite replay / reuse** — can a redeemed invite token be used twice? (`tokens.used` + the binding.)
-- [ ] **Privilege escalation** — any path where `MayGrant` is bypassed; self-invite to a higher role; granting `+s` you don't hold; touching a principal who outranks you.
-- [ ] **TOCTOU** on the legacy→explicit flip + self-seed (concurrent first grants; `publishMu` coverage).
-- [ ] **Revoked-device bearer reuse** + whether revocation actually closes write access immediately.
-- [ ] **Cross-share leakage** — does a member grant on share A ever imply rights on share B?
-- [ ] Join PoP edge cases under the new binding path.
+> ## ✅ SHIPPED 2026-06-23 — 13-agent adversarial pass (6 finders + skeptic verify), **2 real findings fixed**, rest documented as single-owner residuals. Full report: [`docs/M8a-audit.md`](docs/M8a-audit.md).
 
-**Acceptance**
-- ✅ Each confirmed finding has a failing-then-passing regression test; `-race` clean; fleet-verified where it matters.
-- ✅ A short `docs/M8a-audit.md` recording findings + the residual single-owner-threat-model deferrals.
+**Findings (hunted with regression tests for each real one)**
+- [x] **Invite replay / reuse** — ✅ defended: `RedeemToken` is an atomic CAS; sequential + concurrent double-redeem both fail; PoP checked before redeem.
+- [x] **Privilege escalation** — 🛠️ **FIXED**: `MayGrant` never attenuated the granted `+s` bit (`req.Reshare` copied verbatim) — now `MayGrant(…, grantReshare)` rejects conferring `+s` you don't hold (owners unconstrained). Role bounding / no-demote-up / server-derived caller role were already solid.
+- [x] **TOCTOU** legacy→explicit flip — ✅ defended by `publishMu`; the push-gate micro-race is an accepted low-risk residual.
+- [x] **Revoked-device bearer reuse** — ✅ defended: `revoked=0` filtered in both `DeviceByBearer` and `EffectiveMember` (denied on the next request).
+- [x] **Cross-share leakage** — ✅ defended: redemption binds share/principal/role from the server-side binding, never the request.
+- [x] **Join PoP** — ✅ defended; surfaced that invites were **unrevocable bearer capabilities** → 🛠️ **FIXED**: added `meta.RevokeInvite` + `POST /v1/invite/revoke` + `devbox invite revoke <token>`.
 
-**Effort:** M · **Risk:** medium (security-sensitive — do it carefully, don't rush).
+**Acceptance — met ✅**
+- ✅ Both fixes have failing-then-passing regression tests (`TestInviteCannotGrantReshareCallerLacks`, `TestInviteRevoke`, +5 `TestMayGrant` cases); `go test ./... -race` clean (18 pkgs). *Live-fleet replay of the revoke flow pending the Pis' next wake; HTTP+race covers the full handler stack today.*
+- ✅ [`docs/M8a-audit.md`](docs/M8a-audit.md) records findings, confirmed defenses, and the residual single-owner-threat-model deferrals.
+
+**Effort:** M · **Risk:** medium (security-sensitive — done carefully, not rushed).
 
 ---
 
