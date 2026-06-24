@@ -311,6 +311,24 @@ docker compose exec hub devbox-hub token --data /data # mint a join token
 
 The image is a tiny (~32 MB) static, non-root Alpine build — `Dockerfile` + `docker-compose.yml` at the repo root.
 
+<details>
+<summary>🔒 <b>Production: TLS + safe upgrades</b></summary>
+
+**Put the hub behind TLS.** The hub speaks plain HTTP and the bearer token + your file bytes cross the wire in the clear — front it with a reverse proxy (nginx / Caddy / Nginx Proxy Manager) and terminate TLS there (the API is bearer-authed). Two settings a *sync* hub needs in the proxy:
+
+```nginx
+location / {
+    proxy_pass http://<hub-host>:8088;
+    client_max_body_size 0;     # large blob uploads — never cap them
+    proxy_buffering off;        # stream the /v1/events SSE to clients
+    proxy_read_timeout 3600s;   # long-lived event stream
+}
+```
+Devices then `devbox join https://hub.example.com <token>` — Go's client does TLS natively.
+
+**Upgrade safely.** The hub DB is the canonical index to every share's history, so don't hot-swap the binary. `deploy/redeploy-hub.sh` runs the never-YOLO pipeline: **migration dry-run on a *copy* of live data** (`scripts/verify-hub-migration.sh`) → **auth smoke** the new binary in a throwaway instance (`scripts/hub-auth-smoke.sh`) → back up binary + DB → swap → verify the new code is live → **auto-rollback** on any failure. (`--gc-every <dur>` self-maintains so blobs don't accumulate.)
+</details>
+
 ---
 
 ## 🚀 Quick Start
