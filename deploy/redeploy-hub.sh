@@ -31,8 +31,12 @@ say "🧪 migration dry-run on a COPY of live data (live hub untouched)"
 scripts/verify-hub-migration.sh
 
 say "🧪 auth smoke the NEW binary on the NAS (throwaway instance, prod untouched)"
-scp -q /tmp/dh-hub /tmp/dh-client scripts/hub-auth-smoke.sh "$HUB:/tmp/"
-ssh "$HUB" 'bash /tmp/hub-auth-smoke.sh /tmp/dh-hub /tmp/dh-client 8388'
+# /tmp is noexec on TrueNAS — stage the binaries on the app dataset so they can run.
+ssh "$HUB" "mkdir -p '$DEST/.staging'"
+scp -q /tmp/dh-hub /tmp/dh-client scripts/hub-auth-smoke.sh "$HUB:$DEST/.staging/"
+ssh "$HUB" "chmod +x '$DEST/.staging/dh-hub' '$DEST/.staging/dh-client' && \
+  bash '$DEST/.staging/hub-auth-smoke.sh' '$DEST/.staging/dh-hub' '$DEST/.staging/dh-client' 8388; \
+  rc=\$?; rm -rf '$DEST/.staging'; exit \$rc"
 
 say "🔢 pre-deploy counts"
 PRE="$(counts)"; echo "${PRE:-<hub not answering>}"
