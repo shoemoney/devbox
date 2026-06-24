@@ -6,7 +6,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/mnt/tank/apps/devbox/devbox-hub serve --data /mnt/tank/apps/devbox/data --listen 0.0.0.0:8088
+# --gc-every: self-maintain (prune old snapshots + unreferenced chunks) daily, so
+# blobs don't accumulate forever. Bind plain :8088 for the LAN; HTTPS is fronted by
+# NPM at https://hub.shoemoney.ai (the API has bearer auth, so TLS-terminate there).
+ExecStart=/mnt/tank/apps/devbox/devbox-hub serve --data /mnt/tank/apps/devbox/data --listen 0.0.0.0:8088 --gc-every 24h
 WorkingDirectory=/mnt/tank/apps/devbox
 User=shoemoney
 Restart=on-failure
