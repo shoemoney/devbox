@@ -5,7 +5,7 @@
 ![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20P1%20shipped%20%C2%B7%20P2%20next-blueviolet?style=for-the-badge)
 ![base](https://img.shields.io/badge/builds_on-v1%20hardened%20%C2%B7%20v2%20M8%20shipped-00ADD8?style=for-the-badge)
 ![release](https://img.shields.io/badge/release-%F0%9F%93%A6%20latest%20live-success?style=for-the-badge)
-![public](https://img.shields.io/badge/github-%F0%9F%8C%8D%20public%20%C2%B7%20MIT-181717?style=for-the-badge)
+![public](https://img.shields.io/badge/github-%F0%9F%8C%8D%20public%20%C2%B7%20AGPLv3-181717?style=for-the-badge)
 
 </div>
 
