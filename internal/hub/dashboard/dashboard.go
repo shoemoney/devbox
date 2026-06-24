@@ -25,14 +25,30 @@ const onlineWindow = 2 * time.Minute
 // versioned (UI feed only), so it can change freely without breaking clients.
 type Event struct {
 	TS         int64  `json:"ts"`   // unix millis
-	Type       string `json:"type"` // "join" | "push"
+	Type       string `json:"type"` // "join" | "push" | "pull" | "conflict" | "gc"
 	Device     string `json:"device"`
 	DeviceName string `json:"device_name"`
 	Share      string `json:"share,omitempty"`
 	Bytes      int64  `json:"bytes,omitempty"`
 	Chunks     int    `json:"chunks,omitempty"`
+	Pruned     int    `json:"pruned,omitempty"` // gc: snapshots pruned
 	Snapshot   string `json:"snapshot,omitempty"`
 	NewHead    bool   `json:"new_head,omitempty"`
+}
+
+// histWindow is how many one-minute activity buckets the dashboard retains so the
+// sparkline survives a page reload (it was previously computed from the live
+// stream only, so it went blank on refresh).
+const histWindow = 60
+
+// histBucket is one minute of aggregated activity for the sparkline.
+type histBucket struct {
+	TS        int64 `json:"ts"` // unix sec, minute-aligned
+	Bytes     int64 `json:"bytes"`
+	Pushes    int   `json:"pushes"`
+	Pulls     int   `json:"pulls"`
+	Conflicts int   `json:"conflicts"`
+	GCs       int   `json:"gcs"`
 }
 
 // Dashboard holds the live state broker and the read handles into the metadata DB.
@@ -44,6 +60,7 @@ type Dashboard struct {
 
 	mu       sync.Mutex
 	lastSeen map[string]int64 // deviceID -> unix seconds of its last activity
+	hist     []histBucket     // rolling per-minute activity, oldest→newest (≤ histWindow)
 }
 
 // New builds a dashboard over the hub's metadata DB.
@@ -60,12 +77,47 @@ func (d *Dashboard) Emit(ev Event) {
 	if ev.TS == 0 {
 		ev.TS = time.Now().UnixMilli()
 	}
+	now := time.Now().Unix()
+	d.mu.Lock()
 	if ev.Device != "" {
-		d.mu.Lock()
-		d.lastSeen[ev.Device] = time.Now().Unix()
-		d.mu.Unlock()
+		d.lastSeen[ev.Device] = now
 	}
+	d.recordLocked(ev, now)
+	d.mu.Unlock()
 	d.broker.publish(ev)
+}
+
+// recordLocked folds an event into the current minute's history bucket. Caller
+// holds d.mu. Buckets older than histWindow minutes are dropped.
+func (d *Dashboard) recordLocked(ev Event, now int64) {
+	min := now - now%60
+	if n := len(d.hist); n == 0 || d.hist[n-1].TS != min {
+		d.hist = append(d.hist, histBucket{TS: min})
+		if len(d.hist) > histWindow {
+			d.hist = d.hist[len(d.hist)-histWindow:]
+		}
+	}
+	b := &d.hist[len(d.hist)-1]
+	switch ev.Type {
+	case "push":
+		b.Pushes++
+		b.Bytes += ev.Bytes
+	case "pull":
+		b.Pulls++
+	case "conflict":
+		b.Conflicts++
+	case "gc":
+		b.GCs++
+	}
+}
+
+// history returns a copy of the rolling activity window for /api/state.
+func (d *Dashboard) history() []histBucket {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]histBucket, len(d.hist))
+	copy(out, d.hist)
+	return out
 }
 
 func (d *Dashboard) online(deviceID string, now int64) bool {
@@ -97,6 +149,7 @@ type stateResp struct {
 	Totals  totalsInfo   `json:"totals"`
 	Devices []deviceJSON `json:"devices"`
 	Shares  []shareJSON  `json:"shares"`
+	History []histBucket `json:"history"` // rolling per-minute activity for the sparkline
 }
 type hubInfo struct {
 	Version string `json:"version"`
@@ -156,9 +209,9 @@ func (d *Dashboard) handleState(w http.ResponseWriter, _ *http.Request) {
 	bytes, _ := d.db.SumChunkBytes()
 	count := func(t string) int64 { n, _ := d.db.Count(t); return n }
 	resp := stateResp{
-		Hub:    hubInfo{Version: d.version, UptimeS: int64(time.Since(d.started).Seconds())},
-		Totals: totalsInfo{count("devices"), online, count("shares"), count("snapshots"), count("chunks"), bytes},
-		Devices: devices, Shares: shares,
+		Hub:     hubInfo{Version: d.version, UptimeS: int64(time.Since(d.started).Seconds())},
+		Totals:  totalsInfo{count("devices"), online, count("shares"), count("snapshots"), count("chunks"), bytes},
+		Devices: devices, Shares: shares, History: d.history(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

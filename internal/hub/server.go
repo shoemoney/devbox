@@ -426,6 +426,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		return
 	}
 	if req.ManifestHash != head && req.Parent != head {
+		s.dash.Emit(dashboard.Event{Type: "conflict", Device: deviceID, Share: req.Share})
 		writeJSON(w, http.StatusOK, proto.PushResponse{Head: head, Conflict: true})
 		return
 	}
@@ -487,11 +488,17 @@ func (s *Server) missingBlob(hash string) (bool, error) {
 	return !has, err
 }
 
-func (s *Server) handleHead(w http.ResponseWriter, r *http.Request, _ string) {
-	head, _, err := s.db.ShareHead(r.URL.Query().Get("share"))
+func (s *Server) handleHead(w http.ResponseWriter, r *http.Request, deviceID string) {
+	share := r.URL.Query().Get("share")
+	head, _, err := s.db.ShareHead(share)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// A head fetch that returns content is a device pulling/propagating state —
+	// surface it on the dashboard (empty share = nothing to pull, so stay quiet).
+	if head != "" {
+		s.dash.Emit(dashboard.Event{Type: "pull", Device: deviceID, Share: share, Snapshot: shortID(head)})
 	}
 	writeJSON(w, http.StatusOK, proto.HeadResponse{Head: head})
 }

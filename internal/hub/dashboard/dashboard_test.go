@@ -96,3 +96,48 @@ func TestEmitNilSafe(t *testing.T) {
 	var d *Dashboard
 	d.Emit(Event{Type: "push"}) // must not panic
 }
+
+// TestHistoryRing covers the server-side sparkline window: per-minute bucketing,
+// per-type counting (push/pull/conflict/gc), and trimming to histWindow minutes.
+func TestHistoryRing(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Window trim: more minutes than histWindow keeps only the newest histWindow.
+	d := New(db, "t")
+	base := int64(1_000_020) - int64(1_000_020)%60 // minute-aligned
+	d.mu.Lock()
+	for i := 0; i < histWindow+5; i++ {
+		d.recordLocked(Event{Type: "push", Bytes: 10}, base+int64(i*60))
+	}
+	d.mu.Unlock()
+	h := d.history()
+	if len(h) != histWindow {
+		t.Fatalf("history len = %d, want %d (trimmed)", len(h), histWindow)
+	}
+	if h[0].TS != base+int64(5*60) {
+		t.Fatalf("oldest retained bucket TS = %d, want %d", h[0].TS, base+5*60)
+	}
+
+	// Per-type counting within a single minute bucket; join is not charted.
+	d2 := New(db, "t")
+	now := int64(2_000_000)
+	d2.mu.Lock()
+	d2.recordLocked(Event{Type: "push", Bytes: 100}, now)
+	d2.recordLocked(Event{Type: "push", Bytes: 50}, now)
+	d2.recordLocked(Event{Type: "pull"}, now)
+	d2.recordLocked(Event{Type: "conflict"}, now)
+	d2.recordLocked(Event{Type: "gc", Pruned: 3, Chunks: 7}, now)
+	d2.recordLocked(Event{Type: "join"}, now)
+	d2.mu.Unlock()
+	h2 := d2.history()
+	if len(h2) != 1 {
+		t.Fatalf("expected 1 bucket, got %d", len(h2))
+	}
+	if b := h2[0]; b.Pushes != 2 || b.Bytes != 150 || b.Pulls != 1 || b.Conflicts != 1 || b.GCs != 1 {
+		t.Fatalf("bucket = %+v, want pushes=2 bytes=150 pulls=1 conflicts=1 gcs=1", b)
+	}
+}

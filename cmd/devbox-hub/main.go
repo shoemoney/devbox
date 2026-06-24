@@ -74,6 +74,8 @@ func openDB(data string) (*meta.DB, error) {
 func serveCmd() *cobra.Command {
 	var data, listen, dashAddr string
 	var dash bool
+	var gcEvery time.Duration
+	var gcKeep int
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "🚀 run the hub server",
@@ -91,8 +93,9 @@ func serveCmd() *cobra.Command {
 
 			// Optional live dashboard on its own address (localhost by default so it
 			// never widens the API surface; it's unauthenticated read-only metrics).
+			var d *dashboard.Dashboard
 			if dash {
-				d := dashboard.New(db, version)
+				d = dashboard.New(db, version)
 				srv.WithDashboard(d)
 				if !isLoopback(dashAddr) {
 					fmt.Fprintf(out, "⚠️  dashboard on %s is UNAUTHENTICATED and not loopback — anyone who can reach it sees hub activity. SSH-tunnel instead, or you accept this.\n", dashAddr)
@@ -102,6 +105,28 @@ func serveCmd() *cobra.Command {
 					fmt.Fprintf(out, "📊 dashboard live at http://%s\n", dashAddr)
 					if err := ds.ListenAndServe(); err != nil {
 						fmt.Fprintf(out, "dashboard server stopped: %v\n", err)
+					}
+				}()
+			}
+
+			// Optional in-process periodic GC: the same mark-and-sweep as the
+			// `gc` subcommand, run on a timer so the hub self-maintains — and, when
+			// the dashboard is on, each sweep animates as a "gc" flow event. Off by
+			// default (0): auto-deleting blobs on a timer is strictly opt-in.
+			if gcEvery > 0 {
+				go func() {
+					t := time.NewTicker(gcEvery)
+					defer t.Stop()
+					for range t.C {
+						snaps, chunks, err := runGC(db, store, gcKeep)
+						if err != nil {
+							fmt.Fprintf(out, "gc sweep error: %v\n", err)
+							continue
+						}
+						if snaps > 0 || chunks > 0 {
+							fmt.Fprintf(out, "🧹 gc: pruned %d snapshots, %d chunks\n", snaps, chunks)
+						}
+						d.Emit(dashboard.Event{Type: "gc", Pruned: snaps, Chunks: chunks})
 					}
 				}()
 			}
@@ -125,6 +150,8 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&listen, "listen", ":8080", "listen address")
 	cmd.Flags().BoolVar(&dash, "dashboard", false, "serve the live web dashboard")
 	cmd.Flags().StringVar(&dashAddr, "dashboard-addr", "127.0.0.1:8099", "dashboard listen address (loopback by default — unauthenticated)")
+	cmd.Flags().DurationVar(&gcEvery, "gc-every", 0, "run in-process GC on this interval (0 = off; e.g. 24h) — animates on the dashboard")
+	cmd.Flags().IntVar(&gcKeep, "gc-keep", 10, "snapshots to keep per share when --gc-every sweeps")
 	return cmd
 }
 

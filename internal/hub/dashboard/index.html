@@ -146,6 +146,14 @@
   @keyframes tileFlash{0%{box-shadow:inset 0 0 0 1px var(--accent), 0 0 28px color-mix(in srgb,var(--accent) 60%,transparent)}100%{}}
   .tile .spark{position:absolute;right:8px;bottom:8px;width:96px;height:30px;opacity:.95}
   .tile.wide{grid-column:span 2}
+  /* full-width activity history strip — stacked per-minute event bars */
+  .tile.history{grid-column:1 / -1;min-height:84px;padding:11px 14px 10px}
+  .tile.history .htop{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .tile.history .hleg{display:flex;gap:13px;flex-wrap:wrap}
+  .tile.history .hleg span{display:flex;align-items:center;gap:5px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim)}
+  .tile.history .hleg i{width:8px;height:8px;border-radius:2px;display:inline-block}
+  .tile.history .hsub{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint)}
+  .tile.history canvas{position:static;width:100%;height:48px;display:block;margin-top:8px;opacity:1}
 
   /* ---- stage (hero canvas) --------------------------------------------- */
   .stage{
@@ -167,6 +175,16 @@
     z-index:2;pointer-events:none;color:var(--ink-dim);transition:opacity .6s}
   .stage .empty .big{font-family:var(--disp);font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--ink-dim)}
   .stage .empty .sm{font-size:10px;letter-spacing:.2em;color:var(--ink-faint)}
+  /* transient gc-sweep toast — pops at top-center of the stage, fades out */
+  .stage .gc-toast{position:absolute;top:38px;left:50%;transform:translateX(-50%) translateY(-6px);
+    z-index:4;pointer-events:none;display:flex;align-items:center;gap:7px;
+    padding:6px 13px;border-radius:999px;
+    border:1px solid rgba(255,178,61,.40);background:rgba(40,30,8,0.66);backdrop-filter:blur(6px);
+    color:var(--amber);font-size:10.5px;letter-spacing:.10em;font-variant-numeric:tabular-nums;
+    box-shadow:0 0 18px rgba(255,178,61,.30);white-space:nowrap;
+    opacity:0;transition:opacity .35s ease, transform .35s ease}
+  .stage .gc-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .stage .gc-toast .gic{filter:drop-shadow(0 0 6px var(--amber))}
 
   /* ---- activity feed ---------------------------------------------------- */
   .feed{
@@ -201,10 +219,18 @@
   .row.leave .ic{color:var(--amber)}
   .row.revoke .ic{color:var(--red)}
   .row.head .ic{color:var(--magenta)}
+  .row.pull .ic{color:#3df0e6}
+  .row.conflict .ic{color:var(--red)}
+  .row.gc .ic{color:var(--amber)}
   /* left accent bar */
   .row::before{content:"";position:absolute;left:2px;top:9px;bottom:9px;width:2px;border-radius:2px;background:currentColor;opacity:.0}
   .row.push::before{background:var(--cyan);opacity:.5}
   .row.join::before{background:var(--lime);opacity:.5}
+  .row.pull::before{background:#3df0e6;opacity:.5}
+  .row.conflict::before{background:var(--red);opacity:.7}
+  .row.gc::before{background:var(--amber);opacity:.5}
+  .row.conflict{animation:rowIn .25s ease-out, conflictGlow 1.1s ease-out}
+  @keyframes conflictGlow{0%{background:rgba(255,77,106,.22)}100%{background:transparent}}
   @keyframes rowIn{from{opacity:0;transform:translateY(-8px) scale(.99)}to{opacity:1;transform:none}}
   .feed .empty-feed{padding:34px 16px;text-align:center;color:var(--ink-faint);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
 
@@ -282,6 +308,19 @@
         <div class="sub" id="t-brate-sub">last 60s</div>
         <canvas class="spark" id="sp-brate"></canvas>
       </div>
+      <div class="tile history" style="--accent:var(--cyan)">
+        <div class="htop">
+          <div class="label"><span class="ic">▟</span> activity · last hour</div>
+          <div class="hleg">
+            <span><i style="background:var(--cyan)"></i>push</span>
+            <span><i style="background:#3df0e6"></i>pull</span>
+            <span><i style="background:var(--red)"></i>conflict</span>
+            <span><i style="background:var(--amber)"></i>gc</span>
+            <span class="hsub" id="hist-sub">events / min</span>
+          </div>
+        </div>
+        <canvas id="hist-chart"></canvas>
+      </div>
     </section>
 
     <!-- HERO FLOW CANVAS -->
@@ -295,6 +334,7 @@
         <span><i style="background:var(--magenta);box-shadow:0 0 8px var(--magenta)"></i>share</span>
         <span><i style="background:var(--lime);box-shadow:0 0 8px var(--lime)"></i>flow</span>
       </div>
+      <div class="gc-toast" id="gc-toast"><span class="gic">🧹</span><span id="gc-toast-txt"></span></div>
       <div class="empty" id="empty"><div class="big">waiting for activity</div><div class="sm">hub online · no peers connected yet</div></div>
     </section>
 
@@ -363,6 +403,9 @@
     pushBytes:[],          // [ts, bytes]
     eventsForTput:[],      // all event ms timestamps (last 60s) for header
     flowsThisSec:0, flowsLastSec:0, _secMark:0,
+    // per-minute activity history (oldest->newest, <=60 buckets) for the
+    // sparkline. seeded from /api/state.history, appended to by live events.
+    hist:[],               // [{ts, bytes, pushes, pulls, conflicts, gcs}]
   };
 
   /* =====================================================================
@@ -487,6 +530,55 @@
       }
     }
 
+    // public: a device FETCHED a share head — inbound sync (share->core->device).
+    // Visually the mirror of pushFlow: calm cyan, flowing TOWARD the device.
+    const PULL_HUE=176; // calm cyan/teal, distinct from push's brighter 188
+    function pullFlow(deviceId,shareName){
+      const d=nodes.device.get(deviceId);
+      const s=nodes.share.get(shareName);
+      coreEnergy=Math.min(1,coreEnergy+0.18);
+      if(s){ s.pulse=Math.max(s.pulse,0.7); s.glow=Math.min(1,s.glow+0.3); }
+      // particle: share -> core (phase pullIn), then core -> device (phase pullOut)
+      particles.push({
+        phase:"pullIn", t:0, speed:rand(0.9,1.15),
+        from:s?{x:s.x,y:s.y}:{x:CX+rand(-30,30),y:CY+R_SHARE},
+        device:deviceId, mag:0.7, hue:PULL_HUE, trail:[], calm:true,
+      });
+    }
+
+    // public: a push was REJECTED (stale parent / collision). Red collision pulse
+    // on the device->share link. Noticeable but brief.
+    const CONFLICT_HUE=348; // red
+    function conflictPulse(deviceId,shareName){
+      const d=nodes.device.get(deviceId);
+      const s=nodes.share.get(shareName);
+      if(d){ d.conflict=1; d.pulse=Math.max(d.pulse,0.6); }
+      if(s){ s.conflict=1; }
+      // sharp double-ring collision burst at the device
+      const cx=d?d.x:CX, cy=d?d.y:CY-R_DEV;
+      ripples.push({x:cx,y:cy,r:0,max:54,life:1,hue:CONFLICT_HUE,w:3,fast:true});
+      ripples.push({x:cx,y:cy,r:8,max:40,life:1,hue:CONFLICT_HUE,w:1.6,fast:true});
+      // a stalled spark that jumps device->share then snaps back (rejection)
+      if(d&&s){
+        particles.push({phase:"reject",t:0,speed:rand(1.4,1.8),
+          from:{x:d.x,y:d.y}, to:{x:s.x,y:s.y}, hue:CONFLICT_HUE, mag:0.9, trail:[], reject:true});
+      }
+    }
+
+    // public: a hub GC sweep ran (not tied to a device). A cleanup ring that
+    // sweeps OUTWARD from the core, plus a brief rotating "broom" arc.
+    function gcSweep(pruned,chunks){
+      coreFlare=Math.min(1.5,coreFlare+0.4);
+      const mag=clamp(0.4+Math.log2((chunks||0)+ (pruned||0)+2)/10,0.4,1.2);
+      // amber sweep rings emanating from the hub
+      ripples.push({x:CX,y:CY,r:Math.min(W,H)*0.06,max:Math.max(W,H)*0.62,life:1,hue:42,w:2.4,ring:true,sweep:true});
+      ripples.push({x:CX,y:CY,r:Math.min(W,H)*0.06,max:Math.max(W,H)*0.5,life:1,hue:42,w:1.4,ring:true,sweep:true});
+      gcBroom.push({a:Math.random()*TAU,t:0,life:1,mag});
+      // give orbiting shares a faint sweep-acknowledge pulse
+      for(const s of nodes.share.values()){ s.glow=Math.min(1,s.glow+0.12); }
+    }
+    const gcBroom=[]; // rotating sweep arcs for gc
+
     /* ---- per-frame integrate + draw ---- */
     function frame(now){
       const dt=Math.min(50, now-t0)/16.6667; t0=now;
@@ -560,6 +652,7 @@
           if(n.appear<1){ n.x=lerp(CX,n.x,ease); n.y=lerp(CY,n.y,ease); }
           n.pulse=Math.max(0,n.pulse-0.03*dt);
           n.glow=Math.max(0,n.glow-0.012*dt);
+          if(n.conflict) n.conflict=Math.max(0,n.conflict-0.04*dt);
         }
       }
     }
@@ -717,6 +810,38 @@
             p.from={x:CX,y:CY};
             p.hue=308; // recolor to share/magenta on the way out
           }
+        } else if(p.phase==="pullIn"){
+          // inbound sync: share -> core, then core -> device
+          const tt=easeInOutQuad(clamp(p.t,0,1));
+          x=lerp(p.from.x,CX,tt); y=lerp(p.from.y,CY,tt);
+          if(p.t>=1){
+            coreEnergy=Math.min(1,coreEnergy+0.15);
+            const d=nodes.device.get(p.device);
+            p.phase="pullOut"; p.t=0;
+            p.to = d?{x:d.x,y:d.y}:{x:CX+rand(-30,30),y:CY-R_DEV};
+            p.from={x:CX,y:CY};
+          }
+        } else if(p.phase==="pullOut"){
+          // core -> device, lands and pulses the device inbound
+          const tt=easeInOutQuad(clamp(p.t,0,1));
+          x=lerp(p.from.x,p.to.x,tt); y=lerp(p.from.y,p.to.y,tt);
+          if(p.t>=1){
+            done=true;
+            const d=nodes.device.get(p.device);
+            if(d){ d.pulse=1; d.glow=Math.min(1,d.glow+0.5); }
+          }
+        } else if(p.phase==="reject"){
+          // conflict: spark lunges device->share then is yanked back (rejected).
+          // first half eases out, second half snaps back to origin.
+          const half=clamp(p.t,0,1);
+          let tt, ax, ay;
+          if(half<0.55){ tt=easeOutCubic(half/0.55);
+            ax=lerp(p.from.x,p.to.x,tt*0.78); ay=lerp(p.from.y,p.to.y,tt*0.78); }
+          else { tt=easeInOutQuad((half-0.55)/0.45);
+            const px=lerp(p.from.x,p.to.x,0.78), py=lerp(p.from.y,p.to.y,0.78);
+            ax=lerp(px,p.from.x,tt); ay=lerp(py,p.from.y,tt); }
+          x=ax; y=ay;
+          if(p.t>=1){ done=true; }
         } else { // "out" or "out2"
           const tt=easeInOutQuad(clamp(p.t,0,1));
           x=lerp(p.from.x,p.to.x,tt); y=lerp(p.from.y,p.to.y,tt);
@@ -732,19 +857,35 @@
         }
         // trail
         p.trail.push({x,y}); if(p.trail.length>14) p.trail.shift();
-        const baseA=p.faint?0.25:0.9;
+        const baseA=p.faint?0.25:(p.calm?0.7:0.9);
+        const lum=p.faint?60:(p.calm?72:68);
         for(let j=0;j<p.trail.length;j++){
           const tp=p.trail[j]; const a=(j/p.trail.length)*baseA;
-          const rad=(p.faint?1.4:2.6)*p.mag*(0.4+j/p.trail.length);
-          ctx.fillStyle="hsla("+p.hue+",100%,"+(p.faint?60:68)+"%,"+a.toFixed(3)+")";
+          const rad=(p.faint?1.4:(p.calm?2.1:2.6))*p.mag*(0.4+j/p.trail.length);
+          ctx.fillStyle="hsla("+p.hue+",100%,"+lum+"%,"+a.toFixed(3)+")";
           ctx.beginPath(); ctx.arc(tp.x,tp.y,rad,0,TAU); ctx.fill();
         }
         // head
-        ctx.shadowBlur=p.faint?6:14; ctx.shadowColor="hsl("+p.hue+",100%,70%)";
-        ctx.fillStyle="rgba(255,255,255,"+(p.faint?0.6:0.95)+")";
-        ctx.beginPath(); ctx.arc(x,y,(p.faint?1.6:3.2)*p.mag,0,TAU); ctx.fill();
+        ctx.shadowBlur=p.faint?6:(p.reject?16:14); ctx.shadowColor="hsl("+p.hue+",100%,"+(p.reject?60:70)+"%)";
+        ctx.fillStyle = p.reject ? "hsla("+p.hue+",100%,72%,0.95)" : "rgba(255,255,255,"+(p.faint?0.6:0.95)+")";
+        ctx.beginPath(); ctx.arc(x,y,(p.faint?1.6:(p.calm?2.6:3.2))*p.mag,0,TAU); ctx.fill();
         ctx.shadowBlur=0;
-        if(done){ particles.splice(i,1); state.flowsThisSec++; }
+        if(done){ particles.splice(i,1); if(!p.reject) state.flowsThisSec++; }
+      }
+      // gc broom: short rotating sweep arcs around the core
+      if(gcBroom.length){
+        for(let i=gcBroom.length-1;i>=0;i--){
+          const b=gcBroom[i];
+          b.t+=0.03*dt; b.a+=0.16*dt; b.life-=0.02*dt;
+          if(b.life<=0){ gcBroom.splice(i,1); continue; }
+          const rr=Math.min(W,H)*(0.12+0.26*easeOutCubic(1-b.life));
+          const a=clamp(b.life,0,1)*0.6;
+          ctx.strokeStyle="hsla(42,100%,62%,"+a.toFixed(3)+")";
+          ctx.lineWidth=2.4*b.mag;
+          ctx.shadowBlur=10; ctx.shadowColor="hsl(42,100%,60%)";
+          ctx.beginPath(); ctx.arc(CX,CY,rr,b.a,b.a+1.1); ctx.stroke();
+          ctx.shadowBlur=0;
+        }
       }
       ctx.restore();
     }
@@ -754,8 +895,9 @@
       ctx.globalCompositeOperation="lighter";
       for(let i=ripples.length-1;i>=0;i--){
         const r=ripples[i];
-        r.r+=(r.ring?5.5:3.2)*dt*(r.max/120);
-        r.life-=0.018*dt;
+        const grow=(r.ring?5.5:3.2)*(r.fast?2.0:1)*(r.sweep?1.3:1);
+        r.r+=grow*dt*(r.max/120);
+        r.life-=(r.fast?0.045:0.018)*dt;
         if(r.life<=0||r.r>=r.max){ ripples.splice(i,1); continue; }
         const a=clamp(r.life,0,1);
         ctx.strokeStyle="hsla("+r.hue+",100%,65%,"+(a*0.5).toFixed(3)+")";
@@ -786,7 +928,8 @@
     }
 
     return { resize, frame:()=>requestAnimationFrame(frame),
-             pushFlow, joinBurst, ensureDevice, ensureShare, syncFromState,
+             pushFlow, joinBurst, pullFlow, conflictPulse, gcSweep,
+             ensureDevice, ensureShare, syncFromState,
              count:()=>nodes.device.size+nodes.share.size,
              flowsLastSec:()=>state.flowsLastSec };
   })();
@@ -830,6 +973,133 @@
     }
     size();
     return {push,set,size};
+  }
+
+  /* =====================================================================
+     HISTORY CHART — full-width stacked per-minute bars (push/pull/conflict/gc),
+     seeded from /api/state.history and kept live. Hand-drawn, no chart lib.
+     Reads from state.hist (array of {ts,bytes,pushes,pulls,conflicts,gcs}).
+     ===================================================================== */
+  const HIST_MAX=60; // up to 60 one-minute buckets (last hour)
+  const histChart=(function(){
+    const cv=$("hist-chart"); if(!cv) return {draw:()=>{},size:()=>{}};
+    const ctx=cv.getContext("2d");
+    let w=0,h=0,dpr=Math.min(window.devicePixelRatio||1,2);
+    // series: key, color. order = stack order (bottom -> top)
+    const SERIES=[
+      {k:"pushes",   c:"#27e8ff"},
+      {k:"pulls",    c:"#3df0e6"},
+      {k:"conflicts",c:"#ff4d6a"},
+      {k:"gcs",      c:"#ffb23d"},
+    ];
+    function size(){ const r=cv.getBoundingClientRect();
+      w=r.width||600; h=r.height||48; cv.width=w*dpr; cv.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); draw(); }
+    function draw(){
+      ctx.clearRect(0,0,w,h);
+      const data=state.hist;
+      const sub=$("hist-sub");
+      if(!data || data.length===0){
+        if(sub) sub.textContent="awaiting activity";
+        // faint baseline so the strip never looks broken
+        ctx.strokeStyle="rgba(80,130,210,0.12)"; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(0,h-0.5); ctx.lineTo(w,h-0.5); ctx.stroke();
+        return;
+      }
+      // peak stacked total for y-scaling (min 1 so a single event still shows)
+      let mx=1;
+      for(const b of data){
+        let tot=0; for(const s of SERIES) tot+=(+b[s.k]||0);
+        if(tot>mx) mx=tot;
+      }
+      const n=Math.min(HIST_MAX,data.length);
+      const slot=w/HIST_MAX;                 // fixed slot so a partial hour hugs the right edge
+      const bw=Math.max(1.5,Math.min(slot*0.66,11));
+      const pad=2, usableH=h-pad;
+      const start=data.length-n;
+      // baseline
+      ctx.strokeStyle="rgba(80,130,210,0.10)"; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(0,h-0.5); ctx.lineTo(w,h-0.5); ctx.stroke();
+      for(let i=0;i<n;i++){
+        const b=data[start+i];
+        // right-align: newest bucket at far right
+        const cx=w-(n-i)*slot+slot/2;
+        let y=h;
+        for(const s of SERIES){
+          const v=+b[s.k]||0;
+          if(v<=0) continue;
+          const segH=(v/mx)*usableH;
+          ctx.fillStyle=s.c;
+          ctx.shadowBlur=4; ctx.shadowColor=s.c;
+          rrect(cx-bw/2, y-segH, bw, segH, Math.min(2,bw/2));
+          ctx.fill();
+          ctx.shadowBlur=0;
+          y-=segH;
+        }
+      }
+      // tally last-bucket + window totals for the sub-label
+      let win={pushes:0,pulls:0,conflicts:0,gcs:0};
+      for(let i=0;i<n;i++){ const b=data[start+i];
+        for(const s of SERIES) win[s.k]+=(+b[s.k]||0); }
+      const grand=win.pushes+win.pulls+win.conflicts+win.gcs;
+      if(sub){
+        sub.textContent = grand>0
+          ? grand+" ev · peak "+mx+"/min"
+          : "events / min";
+      }
+    }
+    function rrect(x,y,wd,ht,r){
+      r=Math.min(r,wd/2,ht/2); if(ht<=0){ return; }
+      ctx.beginPath();
+      ctx.moveTo(x+r,y); ctx.arcTo(x+wd,y,x+wd,y+ht,r);
+      ctx.arcTo(x+wd,y+ht,x,y+ht,r); ctx.arcTo(x,y+ht,x,y,r);
+      ctx.arcTo(x,y,x+wd,y,r); ctx.closePath();
+    }
+    size();
+    return {draw,size};
+  })();
+
+  /* ---- history data helpers ------------------------------------------- */
+  // merge the server-provided history array into state.hist (replace, since
+  // server is authoritative for sealed buckets). Tolerates missing/garbage.
+  function seedHistory(arr){
+    if(!Array.isArray(arr)){ return; }
+    const clean=[];
+    for(const b of arr){
+      if(!b || typeof b!=="object") continue;
+      clean.push({
+        ts:+b.ts||0,
+        bytes:+b.bytes||0,
+        pushes:+b.pushes||0, pulls:+b.pulls||0,
+        conflicts:+b.conflicts||0, gcs:+b.gcs||0,
+      });
+    }
+    if(clean.length>HIST_MAX) clean.splice(0,clean.length-HIST_MAX);
+    // preserve any live counts accrued in the current (newest) minute that the
+    // server snapshot may not yet reflect: if our last live bucket is the same
+    // minute as the server's newest, take the max per field.
+    const live=state.hist[state.hist.length-1];
+    const last=clean[clean.length-1];
+    if(live && last && live.ts===last.ts){
+      for(const k of ["bytes","pushes","pulls","conflicts","gcs"]) last[k]=Math.max(last[k],live[k]);
+    } else if(live && (!last || live.ts>last.ts)){
+      clean.push(live); if(clean.length>HIST_MAX) clean.shift();
+    }
+    state.hist=clean;
+    histChart.draw();
+  }
+  // bump the current minute bucket from a live event (keeps chart moving between
+  // the ~10s state polls). field one of pushes/pulls/conflicts/gcs; addBytes optional.
+  function histBump(field,addBytes){
+    const minute=Math.floor(Date.now()/60000)*60; // unix sec, minute aligned
+    let b=state.hist[state.hist.length-1];
+    if(!b || b.ts!==minute){
+      b={ts:minute,bytes:0,pushes:0,pulls:0,conflicts:0,gcs:0};
+      state.hist.push(b);
+      if(state.hist.length>HIST_MAX) state.hist.shift();
+    }
+    if(field && (field in b)) b[field]++;
+    if(addBytes) b.bytes+=addBytes;
+    histChart.draw();
   }
 
   /* =====================================================================
@@ -949,6 +1219,20 @@
       cls+=" join"; ic="✨";
       msg=who+' joined the fabric';
       meta=ev.device? String(ev.device).slice(0,8):"";
+    } else if(ev.type==="pull"){
+      cls+=" pull"; ic="↓";
+      msg=who+' pulled <span style="color:var(--ink-dim)">←</span> '+tgt;
+      meta=(ev.snapshot?String(ev.snapshot).slice(0,8):"")||"head fetched";
+    } else if(ev.type==="conflict"){
+      cls+=" conflict"; ic="⚠";
+      msg=who+' <b style="color:var(--red)">conflict</b> <span style="color:var(--ink-dim)">↛</span> '+tgt;
+      meta="push rejected · stale parent";
+    } else if(ev.type==="gc"){
+      cls+=" gc"; ic="🧹";
+      const pn=ev.pruned||0, ck=ev.chunks||0;
+      const [gv,gu]=humanBytes(ev.bytes||0);
+      msg='<b>hub gc</b> swept the fabric';
+      meta="pruned "+pn+" snap"+(pn===1?"":"s")+" · "+ck+" chunk"+(ck===1?"":"s")+((ev.bytes||0)>0?" · "+gv+" "+gu+" freed":"");
     } else if(ev.type==="leave"){
       cls+=" leave"; ic="⏏";
       msg=who+' went offline';
@@ -992,14 +1276,40 @@
       state.totals.bytes  += (ev.bytes||0);
       if(ev.new_head) state.totals.snapshots += 1;
       renderTotals();
+      histBump("pushes", ev.bytes||0);
     } else if(ev.type==="join"){
       flow.joinBurst(ev.device, ev.device_name||ev.device);
+    } else if(ev.type==="pull"){
+      if(ev.share) flow.ensureShare(ev.share);
+      flow.pullFlow(ev.device, ev.share);
+      histBump("pulls", 0);
+    } else if(ev.type==="conflict"){
+      if(ev.share) flow.ensureShare(ev.share);
+      flow.conflictPulse(ev.device, ev.share);
+      histBump("conflicts", 0);
+    } else if(ev.type==="gc"){
+      flow.gcSweep(ev.pruned||0, ev.chunks||0);
+      showGcToast(ev);
+      histBump("gcs", ev.bytes||0);
     }
     addFeed(ev);
     hideEmpty();
   }
   let _emptyHidden=false;
   function hideEmpty(){ if(_emptyHidden)return; const e=$("empty"); if(e){ e.style.opacity="0"; setTimeout(()=>e.remove(),700);} _emptyHidden=true; }
+
+  // transient "🧹 gc: pruned N snapshots, M chunks" toast over the stage
+  let _gcToastT=null;
+  function showGcToast(ev){
+    const el=$("gc-toast"), txt=$("gc-toast-txt"); if(!el||!txt) return;
+    const pn=ev.pruned||0, ck=ev.chunks||0;
+    let s="gc · pruned "+pn+" snapshot"+(pn===1?"":"s")+", "+ck+" chunk"+(ck===1?"":"s");
+    if((ev.bytes||0)>0){ const [gv,gu]=humanBytes(ev.bytes); s+=" · "+gv+" "+gu+" freed"; }
+    txt.textContent=s;
+    el.classList.add("show");
+    clearTimeout(_gcToastT);
+    _gcToastT=setTimeout(()=>el.classList.remove("show"), 3600);
+  }
 
   /* =====================================================================
      CONNECTION INDICATOR
@@ -1021,6 +1331,7 @@
       state.deviceById=new Map(s.devices.map(d=>[d.id,d])); }
     if(Array.isArray(s.shares)){ state.shares=s.shares;
       state.shareByName=new Map(s.shares.map(x=>[x.name,x])); }
+    if("history" in s) seedHistory(s.history); // populated-on-load sparkline
     flow.syncFromState(state.devices,state.shares);
     renderTotals(prev);
     if(state.totals.devices>0 || state.totals.shares>0) hideEmpty();
@@ -1093,25 +1404,56 @@
         snapshots:snaps, chunks:state.totals.chunks||snaps*4,
         bytes:state.totals.bytes|| (snaps*420000+1234567)};
     }
+    // seed a believable per-minute history so the sparkline is alive on load
+    function seedHist(){
+      const out=[], nowMin=Math.floor(Date.now()/60000)*60;
+      for(let i=40;i>=0;i--){
+        const wave=0.5+0.5*Math.sin(i*0.5);
+        out.push({ts:(nowMin-i*60),
+          bytes:Math.round(rand(0,4_000_000)*wave),
+          pushes:Math.round(rand(0,9)*wave),
+          pulls:Math.round(rand(0,6)*wave),
+          conflicts:Math.random()<0.15?(Math.random()*2|0)+1:0,
+          gcs:Math.random()<0.08?1:0});
+      }
+      return out;
+    }
+    let _histSeeded=false;
     function pushState(){
-      applyState({hub:{version:"1.2.0-demo",uptime_s: 3600*7+812 + (Date.now()-state.startedAt)/1000},
-        totals:totals(), devices:devs, shares:shrs});
+      const s={hub:{version:"1.2.0-demo",uptime_s: 3600*7+812 + (Date.now()-state.startedAt)/1000},
+        totals:totals(), devices:devs, shares:shrs};
+      if(!_histSeeded){ s.history=seedHist(); _histSeeded=true; } // seed once; live events extend it
+      applyState(s);
     }
     pushState();
     setInterval(pushState, 10000); // mirror the real 10s snapshot cadence
 
-    // event synthesizer — weighted toward pushes, occasional joins
+    // event synthesizer — weighted toward pushes, occasional joins/pulls/conflicts/gc
     function tick(){
       const r=Math.random();
-      if(r<0.12 && devs.length<NAMES.length){
+      const online=devs.filter(d=>d.online);
+      if(r<0.10 && devs.length<NAMES.length){
         // join a new device
         const used=new Set(devs.map(d=>d.name));
         const name=NAMES.find(n=>!used.has(n))||("node"+(idc));
         const d=mkDev(name); d.online=true; devs.push(d);
         handleEvent({ts:Date.now(),type:"join",device:d.id,device_name:d.name,share:"",bytes:0,chunks:0,new_head:false});
+      } else if(r<0.32){
+        // a pull (inbound sync)
+        const d=pick(online.length?online:devs); const s=pick(shrs);
+        handleEvent({ts:Date.now(),type:"pull",device:d.id,device_name:d.name,share:s.name,
+          snapshot:(Math.random()*0xffffff>>>0).toString(16).padStart(6,"0")});
+      } else if(r<0.40){
+        // a rejected push (conflict)
+        const d=pick(online.length?online:devs); const s=pick(shrs);
+        handleEvent({ts:Date.now(),type:"conflict",device:d.id,device_name:d.name,share:s.name});
+      } else if(r<0.45){
+        // a hub gc sweep
+        handleEvent({ts:Date.now(),type:"gc",pruned:(Math.random()*5|0),
+          chunks:(Math.random()*40|0),bytes:Math.round(rand(0,8_000_000)*(Math.random()<0.7?1:0))});
       } else {
         // a push
-        const online=devs.filter(d=>d.online); const d=pick(online.length?online:devs);
+        const d=pick(online.length?online:devs);
         const s=pick(shrs);
         const chunks=1+(Math.random()*6|0);
         const bytes=Math.round(rand(400, 4_500_000) * (Math.random()<0.3?rand(1,6):1));
@@ -1141,6 +1483,7 @@
     window.addEventListener("resize", ()=>{
       flow.resize();
       for(const k in sparks) sparks[k].size();
+      histChart.size();
     });
     if(DEMO) demoBoot(); else liveBoot();
   }
