@@ -7,9 +7,10 @@
 
 <br/>
 
-![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20v1%20hardened%20%C2%B7%20v2%20M8%20shipped-brightgreen?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20v2%20P1%20shipped%20%C2%B7%20public-brightgreen?style=for-the-badge)
+![release](https://img.shields.io/badge/release-%F0%9F%93%A6%20latest%20live-success?style=for-the-badge)
 ![dashboard](https://img.shields.io/badge/live%20dashboard-%F0%9F%93%8A%20built--in-ff3df0?style=for-the-badge)
-![install](https://img.shields.io/badge/install-curl%20%7C%20sh-blueviolet?style=for-the-badge)
+![install](https://img.shields.io/badge/install-curl%20%7C%20sh%20%C2%B7%20go%20install-blueviolet?style=for-the-badge)
 ![language](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge)
 ![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-✓-success?style=for-the-badge)

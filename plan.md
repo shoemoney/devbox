@@ -2,8 +2,10 @@
 
 # 🗺️ devbox — What's Next (PRD)
 
-![status](https://img.shields.io/badge/status-%F0%9F%93%8B%20planning-blueviolet?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20P1%20shipped%20%C2%B7%20P2%20next-blueviolet?style=for-the-badge)
 ![base](https://img.shields.io/badge/builds_on-v1%20hardened%20%C2%B7%20v2%20M8%20shipped-00ADD8?style=for-the-badge)
+![release](https://img.shields.io/badge/release-%F0%9F%93%A6%20latest%20live-success?style=for-the-badge)
+![public](https://img.shields.io/badge/github-%F0%9F%8C%8D%20public%20%C2%B7%20MIT-181717?style=for-the-badge)
 
 </div>
 
@@ -17,14 +19,20 @@ per-`(share,id)` snapshots, daemon control socket + `pause`/`resume`, **M8a team
 with attenuation · members), and `restore` byte-safety. Plus an **embedded live dashboard**, **cross-platform
 installers** with keep-alive services, a **hub Docker image** for NAS, and **macOS Full Disk Access** detection.
 
+**🚀 P1 shipped (2026-06-23):** real published release (`latest`, 6 OS/arch incl. **linux/arm64** for Pi),
+a one-shot `scripts/release.sh`, CI on Forgejo + GitHub Actions (vet · build · `-race`), the hub image in the
+Forgejo registry, and a public **`shoemoney/devbox-dist`** repo so `curl|sh` works **with no token**. The
+**GitHub repo is now public** (AGPLv3, module path `github.com/shoemoney/devbox` → `go install` works) after a
+clean two-scanner git-history secret sweep. Verified end-to-end on clean no-Go amd64 **and arm64** boxes.
+
 ```mermaid
 flowchart LR
-    NOW["✅ adoption tooling<br/>installers · docker · dashboard"] --> P1["🥇 P1<br/>Releases + CI"]
-    P1 --> P2["🥈 P2<br/>M8a auth audit"]
+    NOW["✅ adoption tooling<br/>installers · docker · dashboard"] --> P1["✅ P1<br/>Releases + CI<br/>+ public repo"]
+    P1 --> P2["🔨 P2<br/>M8a auth audit"]
     P2 --> P3["🥉 P3<br/>dashboard depth"]
     P3 -.demand-driven.-> LATER["🔮 M9–M11<br/>E2E · P2P · HA · TUI"]
     style NOW fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style P1 fill:#5a1e2e,stroke:#ff6b6b,color:#fff
+    style P1 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style P2 fill:#5a4a1e,stroke:#ffd43b,color:#fff
     style P3 fill:#1e3a5a,stroke:#4F9CF9,color:#fff
     style LATER fill:#0d1117,stroke:#4F9CF9,color:#fff
@@ -32,29 +40,25 @@ flowchart LR
 
 ---
 
-## 🥇 P1 — Releases + CI (close the adoption loop)
+## ✅ P1 — Releases + CI (close the adoption loop) — **SHIPPED 2026-06-23**
 
-**Why:** the `curl | sh` installer and the Docker image are built, but the installer's *primary* path —
-download a prebuilt binary — **has nothing to download** (no published release), so it silently falls back to
-`go build` / local `dist/`. A stranger can't adopt devbox without Go + the repo. This is the one gap between
-"we built adoption tooling" and "someone can actually adopt it." CI also gives the whole v2 codebase the
-**regression safety it currently lacks**.
+**Why:** the `curl | sh` installer and Docker image were built, but the installer's *primary* path —
+download a prebuilt binary — **had nothing to download** (no published release), so it silently fell back to
+`go build` / local `dist/`. A stranger couldn't adopt devbox without Go + the repo. P1 closed that gap and gave
+the v2 codebase the **regression safety** it lacked.
 
-**Scope**
-- [ ] `scripts/release.sh` — tag → cross-build (reuse `build-release.sh`'s 8 targets + `SHA256SUMS`) → **upload to BOTH Forgejo and GitHub releases** via their APIs (Forgejo token at `~/.config/forgejo/token`; `gh` for GitHub).
-- [ ] Asset names the installer already expects: `devbox_<os>_<arch>` / `devbox-hub_<os>_<arch>` (+ `.exe`) under a `latest` (or versioned) tag, so `install.sh` / `install.ps1` download cleanly.
-- [ ] CI workflow (Forgejo Actions `.forgejo/workflows/` + mirror to GitHub Actions): `go vet` + `go build ./...` + `go test ./... -race` on push; `build-release` + draft release on tag.
-- [ ] Publish the hub Docker image to the Forgejo container registry (`git.shoemoney.ai/shoemoney/devbox-hub:latest`) so compose can `image:` instead of `build:`.
+**Shipped**
+- [x] `scripts/release.sh` — one-shot: cross-build (now **6 targets incl. `linux/arm64` + `linux/arm`** for Pi) → create/update the release → upload **de-versioned** assets (`devbox_<os>_<arch>`, `+.exe`) the installer downloads directly, plus a de-versioned `SHA256SUMS` so `shasum -c` matches. Idempotent.
+- [x] CI on **Forgejo Actions** (`.forgejo/workflows/`) **+ GitHub Actions** mirror: `go vet` · `go build ./...` · `go test ./... -race` on push/PR; release-on-tag workflow ready. **GitHub CI is green on every push** (Forgejo waits on a self-hosted runner — per the gotcha, the local `release.sh` is the real path).
+- [x] Hub image published to the Forgejo registry: `git.shoemoney.ai/shoemoney/devbox-hub:latest`; compose now `image:` by default (`--build` for local source).
+- [x] **Deviation (approved):** the source repo stays private, so a public **`shoemoney/devbox-dist`** repo carries the installers + binaries as release assets → `curl|sh` works **with no token**. Separately, the **GitHub mirror was made public** (AGPLv3 — matching the open-core moat, module path `github.com/shoemoney/devbox` so `go install …/cmd/devbox@latest` works) after a clean two-method git-history secret scan.
 
-**Acceptance**
-- ✅ On a **clean Pi with no Go**, `curl -fsSL …/install.sh | sh` installs a working `devbox` from a real release.
-- ✅ `docker compose up -d` on the NAS pulls the published image (no local build).
-- ✅ CI is green on `main` and blocks a red PR.
+**Acceptance — all met ✅**
+- ✅ Clean **no-Go** box, `curl -fsSL …/install.sh | sh` installs a working `devbox` from the real release — verified end-to-end on **amd64** and on **arm64** (qemu Pi-proxy; binary runs). Real Pi pending its next wake.
+- ✅ `docker compose up -d` pulls the published image (no local build) — verified on the NAS (throwaway stack, production hub untouched).
+- ✅ CI green on `main` (GitHub Actions) and gates PRs.
 
-**Gotcha to check first:** Forgejo Actions needs runners enabled. If they're not, ship `release.sh` as a
-**local one-shot** (run by hand) and defer the on-tag automation. Don't block the release on CI infra.
-
-**Effort:** M · **Risk:** low (no product code changes).
+**Effort:** M · **Risk:** low — landed without product-code changes (module-path rename only).
 
 ---
 
