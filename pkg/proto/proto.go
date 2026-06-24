@@ -5,17 +5,18 @@ package proto
 
 // Endpoint paths (all under the hub base URL).
 const (
-	PathJoin    = "/v1/join"    // POST, no auth: redeem a join token, enroll a device
-	PathPublish = "/v1/publish" // POST, auth: create a share
-	PathHave    = "/v1/have"    // POST, auth: which chunk hashes is the hub missing?
-	PathBlob    = "/v1/blob/"   // PUT /v1/blob/{hash}, auth: upload one blob's bytes
-	PathPush    = "/v1/push"    // POST, auth: commit a snapshot
-	PathHead    = "/v1/head"    // GET ?share=, auth: current head snapshot id
-	PathLog     = "/v1/log"     // GET ?share=, auth: snapshot history
-	PathEvents  = "/v1/events"  // GET ?share=, auth: SSE stream of change events
-	PathMembers = "/v1/members" // GET ?share=, auth: who can access a share (M8a)
-	PathInvite  = "/v1/invite"  // POST, auth: mint an invite token for a share (M8a)
-	PathMetrics = "/metrics"    // GET, no auth: Prometheus text exposition
+	PathJoin         = "/v1/join"          // POST, no auth: redeem a join token, enroll a device
+	PathPublish      = "/v1/publish"       // POST, auth: create a share
+	PathHave         = "/v1/have"          // POST, auth: which chunk hashes is the hub missing?
+	PathBlob         = "/v1/blob/"         // PUT /v1/blob/{hash}, auth: upload one blob's bytes
+	PathPush         = "/v1/push"          // POST, auth: commit a snapshot
+	PathHead         = "/v1/head"          // GET ?share=, auth: current head snapshot id
+	PathLog          = "/v1/log"           // GET ?share=, auth: snapshot history
+	PathEvents       = "/v1/events"        // GET ?share=, auth: SSE stream of change events
+	PathMembers      = "/v1/members"       // GET ?share=, auth: who can access a share (M8a)
+	PathInvite       = "/v1/invite"        // POST, auth: mint an invite token for a share (M8a)
+	PathInviteRevoke = "/v1/invite/revoke" // POST, auth: kill a pending invite token (M8a)
+	PathMetrics      = "/metrics"          // GET, no auth: Prometheus text exposition
 )
 
 // InviteRequest asks the hub to mint an invite: a join token that, when redeemed,
@@ -31,6 +32,17 @@ type InviteRequest struct {
 // InviteResponse returns the raw invite token; the invitee runs `devbox join`.
 type InviteResponse struct {
 	Token string `json:"token"`
+}
+
+// InviteRevokeRequest kills a still-pending invite by its raw token, so a leaked
+// or regretted invite can be cancelled before it's redeemed (within its TTL).
+type InviteRevokeRequest struct {
+	Token string `json:"token"`
+}
+
+// InviteRevokeResponse reports whether a pending invite was actually killed.
+type InviteRevokeResponse struct {
+	Revoked bool `json:"revoked"`
 }
 
 // SnapshotInfo is one entry in a share's history.

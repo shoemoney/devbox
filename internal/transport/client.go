@@ -192,6 +192,11 @@ func (c *Client) Invite(share, principal, role string, reshare bool) (string, er
 	return resp.Token, err
 }
 
+// RevokeInvite kills a still-pending invite token before it's redeemed.
+func (c *Client) RevokeInvite(token string) error {
+	return c.do(http.MethodPost, proto.PathInviteRevoke, true, proto.InviteRevokeRequest{Token: token}, nil)
+}
+
 // do sends a JSON request (nil body for GET) and decodes a JSON response into
 // out (nil out discards the body). It sets the bearer header when auth is true.
 func (c *Client) do(method, path string, auth bool, body, out any) error {

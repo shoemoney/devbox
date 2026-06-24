@@ -445,13 +445,16 @@ func (d *DB) RoleOf(share, principalID string) (int, error) {
 }
 
 // MayGrant reports whether a caller holding callerRole (and the +s bit) may set a
-// principal currently at targetCurrentRole to grantRole. Pure attenuation: a
-// compromised client can't escalate because the hub re-checks this server-side.
+// principal currently at targetCurrentRole to grantRole, optionally conferring the
+// +s reshare bit (grantReshare). Pure attenuation: a compromised client can't
+// escalate because the hub re-checks this server-side.
 //   - grantRole must be a real role;
 //   - viewers can't grant; editors need +s; admins/owners always may;
 //   - you can never grant ABOVE your own role (delegation only narrows);
-//   - you can never touch a principal who currently outranks you (no demoting up).
-func MayGrant(callerRole int, callerCanReshare bool, targetCurrentRole, grantRole int) bool {
+//   - you can never touch a principal who currently outranks you (no demoting up);
+//   - you can only confer +s if you hold it yourself (owners are unconstrained) —
+//     the reshare bit is a delegation power, so it attenuates like the role does.
+func MayGrant(callerRole int, callerCanReshare bool, targetCurrentRole, grantRole int, grantReshare bool) bool {
 	if grantRole < RoleViewer || grantRole > RoleOwner {
 		return false
 	}
@@ -459,6 +462,9 @@ func MayGrant(callerRole int, callerCanReshare bool, targetCurrentRole, grantRol
 		return false
 	}
 	if callerRole < RoleAdmin && !callerCanReshare {
+		return false
+	}
+	if grantReshare && !callerCanReshare && callerRole < RoleOwner {
 		return false
 	}
 	return grantRole <= callerRole && targetCurrentRole <= callerRole
@@ -509,6 +515,29 @@ func (d *DB) InviteBinding(tokenHash string) (inv Invite, ok bool, err error) {
 	}
 	inv.CanReshare = cr != 0
 	return inv, true, nil
+}
+
+// RevokeInvite kills a still-pending invite: it removes the redeemable token and
+// its binding so /v1/join can no longer accept it — the missing primitive for a
+// leaked or regretted invite within its TTL. Returns false if nothing was killed
+// (already redeemed, already revoked, or never existed). One transaction.
+func (d *DB) RevokeInvite(tokenHash string) (bool, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM tokens WHERE hash=? AND used=0`, tokenHash)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil // already redeemed/revoked/unknown — nothing to kill
+	}
+	if _, err := tx.Exec(`DELETE FROM invites WHERE token_hash=?`, tokenHash); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // EnsurePrincipal creates a principal if absent (idempotent).

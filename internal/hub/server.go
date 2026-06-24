@@ -68,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+proto.PathJoin, s.handleJoin)
 	mux.HandleFunc("POST "+proto.PathPublish, s.auth(s.handlePublish))
+	mux.HandleFunc("POST "+proto.PathInviteRevoke, s.auth(s.handleInviteRevoke))
 	mux.HandleFunc("POST "+proto.PathHave, s.auth(s.handleHave))
 	mux.HandleFunc("PUT "+proto.PathBlob+"{hash}", s.auth(s.handleBlob))
 	mux.HandleFunc("GET "+proto.PathBlob+"{hash}", s.auth(s.handleGetBlob))
@@ -209,7 +210,7 @@ func (s *Server) handleInvite(w http.ResponseWriter, r *http.Request, deviceID s
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !meta.MayGrant(callerRole, callerReshare, targetCurrent, grantRole) {
+	if !meta.MayGrant(callerRole, callerReshare, targetCurrent, grantRole, req.Reshare) {
 		writeErr(w, http.StatusForbidden, "your role may not grant this")
 		return
 	}
@@ -241,6 +242,46 @@ func (s *Server) handleInvite(w http.ResponseWriter, r *http.Request, deviceID s
 		return
 	}
 	writeJSON(w, http.StatusOK, proto.InviteResponse{Token: tok})
+}
+
+// handleInviteRevoke kills a still-pending invite by its raw token. Only a caller
+// who could have MINTED it (same MayGrant authority on the bound share) may revoke
+// it — so an invite can't be cancelled by someone who couldn't have issued it, and
+// the binding isn't probeable by the unauthorized.
+func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request, deviceID string) {
+	var req proto.InviteRevokeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	hash := HashToken(req.Token)
+	inv, ok, err := s.db.InviteBinding(hash)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no such invite")
+		return
+	}
+	callerRole, callerReshare, _, err := s.db.EffectiveMember(deviceID, inv.Share)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !meta.MayGrant(callerRole, callerReshare, 0, inv.Role, inv.CanReshare) {
+		writeErr(w, http.StatusForbidden, "your role may not revoke this invite")
+		return
+	}
+	killed, err := s.db.RevokeInvite(hash)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !killed {
+		writeErr(w, http.StatusConflict, "invite already redeemed or revoked")
+		return
+	}
+	writeJSON(w, http.StatusOK, proto.InviteRevokeResponse{Revoked: true})
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, deviceID string) {

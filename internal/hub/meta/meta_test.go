@@ -464,27 +464,34 @@ func TestRolesLegacyAndExplicit(t *testing.T) {
 // can't grant, and editors need the +s reshare bit.
 func TestMayGrant(t *testing.T) {
 	cases := []struct {
-		name                            string
-		callerRole                      int
-		reshare                         bool
-		targetCurrent, grant            int
-		want                            bool
+		name                 string
+		callerRole           int
+		reshare              bool
+		targetCurrent, grant int
+		grantReshare         bool
+		want                 bool
 	}{
-		{"owner grants editor", RoleOwner, false, 0, RoleEditor, true},
-		{"owner grants owner (co-owner)", RoleOwner, false, 0, RoleOwner, true},
-		{"admin grants admin", RoleAdmin, false, 0, RoleAdmin, true},
-		{"admin can't grant owner (above self)", RoleAdmin, false, 0, RoleOwner, false},
-		{"editor with +s grants editor", RoleEditor, true, 0, RoleEditor, true},
-		{"editor with +s can't grant admin", RoleEditor, true, 0, RoleAdmin, false},
-		{"editor WITHOUT +s can't grant", RoleEditor, false, 0, RoleViewer, false},
-		{"viewer can't grant", RoleViewer, true, 0, RoleViewer, false},
-		{"can't demote a superior owner", RoleEditor, true, RoleOwner, RoleViewer, false},
-		{"invalid role rejected", RoleOwner, false, 0, 999, false},
-		{"zero role (unmembered) can't grant", 0, false, 0, RoleViewer, false},
+		{"owner grants editor", RoleOwner, false, 0, RoleEditor, false, true},
+		{"owner grants owner (co-owner)", RoleOwner, false, 0, RoleOwner, false, true},
+		{"admin grants admin", RoleAdmin, false, 0, RoleAdmin, false, true},
+		{"admin can't grant owner (above self)", RoleAdmin, false, 0, RoleOwner, false, false},
+		{"editor with +s grants editor", RoleEditor, true, 0, RoleEditor, false, true},
+		{"editor with +s can't grant admin", RoleEditor, true, 0, RoleAdmin, false, false},
+		{"editor WITHOUT +s can't grant", RoleEditor, false, 0, RoleViewer, false, false},
+		{"viewer can't grant", RoleViewer, true, 0, RoleViewer, false, false},
+		{"can't demote a superior owner", RoleEditor, true, RoleOwner, RoleViewer, false, false},
+		{"invalid role rejected", RoleOwner, false, 0, 999, false, false},
+		{"zero role (unmembered) can't grant", 0, false, 0, RoleViewer, false, false},
+		// +s (reshare) attenuation: you can only confer the delegation bit you hold.
+		{"editor+s confers +s", RoleEditor, true, 0, RoleEditor, true, true},
+		{"admin WITHOUT +s can't confer +s", RoleAdmin, false, 0, RoleEditor, true, false},
+		{"admin WITH +s confers +s", RoleAdmin, true, 0, RoleEditor, true, true},
+		{"owner confers +s unconstrained", RoleOwner, false, 0, RoleEditor, true, true},
+		{"editor+s confers +s but role still bounds (no admin)", RoleEditor, true, 0, RoleAdmin, true, false},
 	}
 	for _, c := range cases {
-		if got := MayGrant(c.callerRole, c.reshare, c.targetCurrent, c.grant); got != c.want {
-			t.Errorf("%s: MayGrant(%d,%v,%d,%d)=%v, want %v", c.name, c.callerRole, c.reshare, c.targetCurrent, c.grant, got, c.want)
+		if got := MayGrant(c.callerRole, c.reshare, c.targetCurrent, c.grant, c.grantReshare); got != c.want {
+			t.Errorf("%s: MayGrant(%d,%v,%d,%d,%v)=%v, want %v", c.name, c.callerRole, c.reshare, c.targetCurrent, c.grant, c.grantReshare, got, c.want)
 		}
 	}
 }

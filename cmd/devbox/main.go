@@ -349,6 +349,31 @@ func inviteCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&reshare, "reshare", false, "grant the +s bit (lets them delegate)")
+	cmd.AddCommand(&cobra.Command{
+		Use:   "revoke <token>",
+		Short: "🗑️  revoke a pending invite token before it's redeemed",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			d, err := config.LoadDaemon(dir)
+			if err != nil {
+				return err
+			}
+			if d.Hub == "" || d.Bearer == "" {
+				return fmt.Errorf("not joined — run: devbox join <hub> <token>")
+			}
+			c := transport.New(d.Hub)
+			c.SetBearer(d.Bearer)
+			if err := c.RevokeInvite(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "🗑️  invite revoked — it can no longer be redeemed")
+			return nil
+		},
+	})
 	return cmd
 }
 
