@@ -2,7 +2,7 @@
 
 # 🗺️ devbox — What's Next (PRD)
 
-![status](https://img.shields.io/badge/status-%F0%9F%9A%80%20P1%2BP2%20shipped%20%C2%B7%20P3%20next-blueviolet?style=for-the-badge)
+![status](https://img.shields.io/badge/status-%E2%9C%85%20P1%2BP2%2BP3%20shipped%20%C2%B7%20M9%2B%20demand--driven-brightgreen?style=for-the-badge)
 ![base](https://img.shields.io/badge/builds_on-v1%20hardened%20%C2%B7%20v2%20M8%20shipped-00ADD8?style=for-the-badge)
 ![release](https://img.shields.io/badge/release-%F0%9F%93%A6%20latest%20live-success?style=for-the-badge)
 ![public](https://img.shields.io/badge/github-%F0%9F%8C%8D%20public%20%C2%B7%20AGPLv3-181717?style=for-the-badge)
@@ -29,12 +29,12 @@ clean two-scanner git-history secret sweep. Verified end-to-end on clean no-Go a
 flowchart LR
     NOW["✅ adoption tooling<br/>installers · docker · dashboard"] --> P1["✅ P1<br/>Releases + CI<br/>+ public repo"]
     P1 --> P2["✅ P2<br/>M8a auth audit<br/>2 fixes + tests"]
-    P2 --> P3["🔨 P3<br/>dashboard depth"]
+    P2 --> P3["✅ P3<br/>dashboard depth<br/>pull·gc·conflict + history"]
     P3 -.demand-driven.-> LATER["🔮 M9–M11<br/>E2E · P2P · HA · TUI"]
     style NOW fill:#1e5a2e,stroke:#51cf66,color:#fff
     style P1 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style P2 fill:#1e5a2e,stroke:#51cf66,color:#fff
-    style P3 fill:#5a4a1e,stroke:#ffd43b,color:#fff
+    style P3 fill:#1e5a2e,stroke:#51cf66,color:#fff
     style LATER fill:#0d1117,stroke:#4F9CF9,color:#fff
 ```
 
@@ -86,18 +86,19 @@ This is the M7.5 treatment for v2's new attack surface, **before** anyone relies
 
 ---
 
-## 🥉 P3 — Dashboard depth (delight, not load-bearing)
+## ✅ P3 — Dashboard depth — **SHIPPED 2026-06-23**
 
-**Why:** the live dashboard wows already, but it only animates `join` + `push`. More flow types + a terminal
-view would make it a genuinely complete ops surface.
+**Why:** the live dashboard wowed already, but it only animated `join` + `push`. P3 made it a genuinely
+complete ops surface.
 
-**Scope**
-- [ ] Emit `pull` (head fetch / propagation), `gc` (sweep), and `conflict` flow events from the hub; animate them.
-- [ ] A historical sparkline window persisted server-side (currently the frontend computes rates from the live stream only).
-- [ ] *(Optional)* an **M11 TUI** over the daemon control socket (`devbox top`?) — re-adds the `/events` SSE stream we trimmed, now with a real consumer (bubbletea).
+**Shipped**
+- [x] Hub emits `pull` (head fetch / propagation, `handleHead`), `conflict` (stale-parent push, `handlePush`), and `gc` (in-process sweep) flow events. GC runs in-process via opt-in `serve --gc-every <dur>` (default off — auto-deleting blobs on a timer is opt-in) so the hub self-maintains *and* each sweep animates.
+- [x] **Server-side history window**: per-minute activity buckets (push/pull/conflict/gc + bytes, last 60 min) in `/api/state` → the sparkline now survives a page reload (was live-stream-only). Recorded under the `Emit` lock; race-clean.
+- [x] Frontend (`index.html`, one file, no new deps): `pull` = teal inbound pulse, `conflict` = red collision burst, `gc` = amber hub sweep + toast; stacked per-minute history sparkline seeded from `/api/state` and growing live.
+- [~] *(Optional M11 TUI)* — skipped, demand-driven (no consumer yet).
 
-**Acceptance**
-- ✅ A `gc` run and a multi-device `pull` both visibly animate; new event types fleet-verified on the SSE stream.
+**Acceptance — met ✅**
+- ✅ `gc`, `pull`, `conflict` (plus `join`/`push`) all visibly animate; **all 5 verified on the live SSE stream** by `scripts/dashboard-fleet-verify.sh` (now with a `LOCAL=1` mode). Frontend rendered headless with **0 console errors**; history sparkline + gc toast + all event feeds present. Tests: `TestHistoryRing`; `go test ./... -race` clean.
 
 **Effort:** S–M · **Risk:** low.
 

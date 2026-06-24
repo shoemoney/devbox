@@ -367,6 +367,7 @@ container automatically. 🪄
 | `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer |
 | `devbox pause` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket (M8) |
 | `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
+| `devbox invite revoke <token>` | 🗑️ Kill a pending invite before it's redeemed (only a caller who could mint it) |
 | `devbox members <share>` | 👥 Show who can access a share, or "legacy share" (M8a) |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Hub-side role admin (M8a) |
 | `devbox peers` | 🌐 *Planned — needs a hub peers endpoint (M10)* |
@@ -384,6 +385,7 @@ container automatically. 🪄
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
+| `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
 | `devbox-hub gc` | 🧹 Garbage-collect unreferenced chunks |
 
 </details>
@@ -400,21 +402,24 @@ container automatically. 🪄
 ```bash
 devbox-hub serve --dashboard                       # loopback http://127.0.0.1:8099 (safe default)
 devbox-hub serve --dashboard --dashboard-addr 0.0.0.0:8099   # expose on the LAN (unauthenticated — warns you)
+devbox-hub serve --dashboard --gc-every 24h        # also self-maintain (in-process GC) — each sweep animates
 ```
 
 A mission-control flow visualization rendered on `<canvas>` at 60fps: a **breathing hub core**, your
-**devices orbiting** (bright = active), **shares** on the outer ring — and when a device pushes, a glowing
-**particle streams device → hub → share** and fans out to the subscribers. Plus live **metric tiles** with
-sparklines (devices online, shares, snapshots, chunks, total data, pushes/min, bytes/min) and a streaming,
-color-coded **activity feed**.
+**devices orbiting** (bright = active), **shares** on the outer ring — and the fabric comes alive with **five
+flow events**: `push` (device → hub → share, fans out to subscribers), `pull` (a calm teal pulse inbound as a
+device syncs), `conflict` (a red collision burst when a stale push is rejected), `gc` (an amber hub-wide sweep
++ toast when garbage-collection runs), and `join`. Plus live **metric tiles** and a **server-side history
+sparkline** (stacked push/pull/conflict/gc per minute, last hour) that **survives a page reload**, and a
+streaming, color-coded **activity feed**.
 
 | How it works | |
 |---|---|
 | 🖥️ **Served from the hub** | single `go:embed`'d HTML, vanilla JS + canvas, zero CDN/build |
-| 🔌 **`GET /api/state`** | snapshot: hub, totals, devices, shares (UI polls every 10s) |
-| 📡 **`GET /api/events`** | SSE live flow stream (`join`, `push`) — the dashboard animates each one |
+| 🔌 **`GET /api/state`** | snapshot: hub, totals, devices, shares + a 60-minute `history` window (UI polls every 10s) |
+| 📡 **`GET /api/events`** | SSE live flow stream (`join` · `push` · `pull` · `conflict` · `gc`) — the dashboard animates each one |
 | 🔒 **Loopback by default** | unauthenticated read-only metrics; bind non-loopback only deliberately (it warns) |
-| 🎬 **`?demo=1`** | synthesizes a live stream — instant wow + works offline (`file://`) |
+| 🎬 **`?demo=1`** | synthesizes a live stream of all five event types — instant wow + works offline (`file://`) |
 
 ```mermaid
 flowchart LR
