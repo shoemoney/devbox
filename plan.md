@@ -54,7 +54,7 @@ the v2 codebase the **regression safety** it lacked.
 - [x] **Deviation (approved):** the source repo stays private, so a public **`shoemoney/devbox-dist`** repo carries the installers + binaries as release assets → `curl|sh` works **with no token**. Separately, the **GitHub mirror was made public** (AGPLv3 — matching the open-core moat, module path `github.com/shoemoney/devbox` so `go install …/cmd/devbox@latest` works) after a clean two-method git-history secret scan.
 
 **Acceptance — all met ✅**
-- ✅ Clean **no-Go** box, `curl -fsSL …/install.sh | sh` installs a working `devbox` from the real release — verified end-to-end on **amd64** and on **arm64** (qemu Pi-proxy; binary runs). Real Pi pending its next wake.
+- ✅ Clean **no-Go** box, `curl -fsSL …/install.sh | sh` installs a working `devbox` from the real release — verified end-to-end on **amd64** and **fleet-verified on a real clean no-Go arm64 Raspberry Pi** (`192.168.1.13`): anon `curl|sh` → `devbox 0346995`, `devbox doctor` reports `linux/arm64`.
 - ✅ `docker compose up -d` pulls the published image (no local build) — verified on the NAS (throwaway stack, production hub untouched).
 - ✅ CI green on `main` (GitHub Actions) and gates PRs.
 
@@ -79,7 +79,7 @@ This is the M7.5 treatment for v2's new attack surface, **before** anyone relies
 - [x] **Join PoP** — ✅ defended; surfaced that invites were **unrevocable bearer capabilities** → 🛠️ **FIXED**: added `meta.RevokeInvite` + `POST /v1/invite/revoke` + `devbox invite revoke <token>`.
 
 **Acceptance — met ✅**
-- ✅ Both fixes have failing-then-passing regression tests (`TestInviteCannotGrantReshareCallerLacks`, `TestInviteRevoke`, +5 `TestMayGrant` cases); `go test ./... -race` clean (18 pkgs). *Live-fleet replay of the revoke flow pending the Pis' next wake; HTTP+race covers the full handler stack today.*
+- ✅ Both fixes have failing-then-passing regression tests (`TestInviteCannotGrantReshareCallerLacks`, `TestInviteRevoke`, +5 `TestMayGrant` cases); `go test ./... -race` clean (18 pkgs). The hub binary carrying these changes ran clean on the real arm64 Pi (via the P3 fleet-verify); the auth logic is platform-independent, so HTTP+race is the load-bearing verification.
 - ✅ [`docs/M8a-audit.md`](docs/M8a-audit.md) records findings, confirmed defenses, and the residual single-owner-threat-model deferrals.
 
 **Effort:** M · **Risk:** medium (security-sensitive — done carefully, not rushed).
@@ -98,7 +98,7 @@ complete ops surface.
 - [~] *(Optional M11 TUI)* — skipped, demand-driven (no consumer yet).
 
 **Acceptance — met ✅**
-- ✅ `gc`, `pull`, `conflict` (plus `join`/`push`) all visibly animate; **all 5 verified on the live SSE stream** by `scripts/dashboard-fleet-verify.sh` (now with a `LOCAL=1` mode). Frontend rendered headless with **0 console errors**; history sparkline + gc toast + all event feeds present. Tests: `TestHistoryRing`; `go test ./... -race` clean.
+- ✅ `gc`, `pull`, `conflict` (plus `join`/`push`) all visibly animate; **all 5 fleet-verified on the live SSE stream on a real arm64 Pi** (`192.168.1.13`) by `scripts/dashboard-fleet-verify.sh` (also a `LOCAL=1` mode). Frontend rendered headless with **0 console errors**; history sparkline + gc toast + all event feeds present. Tests: `TestHistoryRing`; `go test ./... -race` clean.
 
 **Effort:** S–M · **Risk:** low.
 
