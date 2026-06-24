@@ -47,40 +47,43 @@ counts() { # "dev/share/snap/chunk" for a db file
   echo "$d/$s/$n/$c"
 }
 
+# Capture BEFORE the binary touches the copy — robust whether or not a migration
+# actually runs (a same-version redeploy is a legitimate no-op, not a failure).
+snapcounts() { sqlite3 "$1" 'SELECT (SELECT COUNT(*) FROM devices),(SELECT COUNT(*) FROM shares),(SELECT COUNT(*) FROM snapshots),(SELECT COUNT(*) FROM chunks);' 2>/dev/null | tr '|' ' '; }
 if have_sqlite; then
-  echo "📊 BEFORE: user_version=$(sqlite3 "$DATA/devbox-hub.db" 'PRAGMA user_version;')  counts(dev/share/snap/chunk)=$(counts "$DATA/devbox-hub.db")"
+  vB=$(sqlite3 "$DATA/devbox-hub.db" 'PRAGMA user_version;')
+  read -r dB sB nB cB <<<"$(snapcounts "$DATA/devbox-hub.db")"
+  echo "📊 BEFORE: user_version=$vB  dev/share/snap/chunk=$dB/$sB/$nB/$cB"
 fi
 
-echo "🚀 running migration (devbox-hub gc --keep 100000 triggers Open→migrate, prunes nothing)…"
-"$WORK/devbox-hub" gc --data "$DATA" --keep 100000
-echo "   exit: $?"
+echo "🚀 opening DB with the new binary (gc --keep 100000 → Open runs any pending migration, prunes nothing)…"
+"$WORK/devbox-hub" gc --data "$DATA" --keep 100000; rc=$?
+echo "   exit: $rc"
 
 echo
 echo "🔎 checks:"
 fail=0
 check() { if eval "$2"; then echo "  ✅ $1"; else echo "  ❌ $1"; fail=1; fi; }
-
-check "pre-migration backup created" "[[ -f \"$DATA/devbox-hub.db.pre-v2.bak\" ]]"
+check "new binary opened the DB cleanly (exit 0)" "[[ $rc -eq 0 ]]"
 
 if have_sqlite; then
-  ver=$(sqlite3 "$DATA/devbox-hub.db" 'PRAGMA user_version;')
-  echo "  ℹ️  AFTER: user_version=$ver  counts=$(counts "$DATA/devbox-hub.db")"
-  check "user_version advanced past 0" "[[ \"$ver\" -gt 0 ]]"
-
-  # --- INVARIANTS (adjust per migration) -------------------------------------
-  # M8 (v1→v2): devices/shares/chunks identical; snapshots may grow (head backfill).
-  bak="$DATA/devbox-hub.db.pre-v2.bak"
-  for tbl in devices shares chunks; do
-    before=$(sqlite3 "$bak" "SELECT COUNT(*) FROM $tbl;")
-    after=$(sqlite3 "$DATA/devbox-hub.db" "SELECT COUNT(*) FROM $tbl;")
-    check "$tbl preserved ($before -> $after)" "[[ \"$before\" -eq \"$after\" ]]"
-  done
-  snap_b=$(sqlite3 "$bak" "SELECT COUNT(*) FROM snapshots;")
-  snap_a=$(sqlite3 "$DATA/devbox-hub.db" "SELECT COUNT(*) FROM snapshots;")
-  check "snapshots not lost ($snap_b -> $snap_a, growth ok for backfill)" "[[ \"$snap_a\" -ge \"$snap_b\" ]]"
-
+  vA=$(sqlite3 "$DATA/devbox-hub.db" 'PRAGMA user_version;')
+  read -r dA sA nA cA <<<"$(snapcounts "$DATA/devbox-hub.db")"
+  echo "  ℹ️  AFTER: user_version=$vA  dev/share/snap/chunk=$dA/$sA/$nA/$cA"
+  # --- INVARIANTS: devices/shares/chunks identical; snapshots may only grow; ----
+  # user_version may only advance; a v1→v2 jump must leave its backup. -----------
+  check "user_version did not regress ($vB → $vA)" "[[ $vA -ge $vB ]]"
+  check "devices preserved ($dB → $dA)" "[[ $dB -eq $dA ]]"
+  check "shares preserved ($sB → $sA)" "[[ $sB -eq $sA ]]"
+  check "chunks preserved ($cB → $cA)" "[[ $cB -eq $cA ]]"
+  check "snapshots not lost ($nB → $nA, growth ok for backfill)" "[[ $nA -ge $nB ]]"
   orphans=$(sqlite3 "$DATA/devbox-hub.db" "SELECT COUNT(*) FROM shares s WHERE s.head_snapshot IS NOT NULL AND s.head_snapshot!='' AND NOT EXISTS (SELECT 1 FROM snapshots o WHERE o.share=s.name AND o.id=s.head_snapshot);")
   check "every non-empty head has its own snapshot row (orphans=$orphans)" "[[ \"$orphans\" -eq 0 ]]"
+  if [[ "$vB" -eq 0 && "$vA" -gt 0 ]]; then
+    check "v1→v2 pre-migration backup created" "[[ -f \"$DATA/devbox-hub.db.pre-v2.bak\" ]]"
+  else
+    echo "  ℹ️  no v1→v2 migration this run (already at v$vA) — backup check N/A"
+  fi
 else
   echo "  ⚠️  sqlite3 not found — skipped count/schema invariants (install for full checks)"
 fi
