@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // A join must carry a valid proof-of-possession signature over JoinChallenge,

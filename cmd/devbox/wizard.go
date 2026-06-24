@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/config"
 )
 
 // setupSkippedFile, when present in the config dir, means the user chose "don't

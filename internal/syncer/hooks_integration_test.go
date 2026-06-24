@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/hooks"
+	"github.com/shoemoney/devbox/internal/hub"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/secret"
 )
 
 func writeExecHook(t *testing.T, root, event, script string) {

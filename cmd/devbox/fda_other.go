@@ -2,7 +2,7 @@
 
 package main
 
-import "git.shoemoney.ai/shoemoney/devbox/internal/config"
+import "github.com/shoemoney/devbox/internal/config"
 
 // Full Disk Access is a macOS concept; elsewhere these are no-ops. (Windows has a
 // loose analog — Controlled Folder Access — but it's off by default; install.ps1

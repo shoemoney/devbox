@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/hub/meta"
 )
 
 //go:embed index.html

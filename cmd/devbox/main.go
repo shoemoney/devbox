@@ -18,16 +18,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
-	"git.shoemoney.ai/shoemoney/devbox/internal/control"
-	"git.shoemoney.ai/shoemoney/devbox/internal/daemon"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
-	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
-	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
-	"git.shoemoney.ai/shoemoney/devbox/internal/watch"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/control"
+	"github.com/shoemoney/devbox/internal/daemon"
+	"github.com/shoemoney/devbox/internal/hooks"
+	"github.com/shoemoney/devbox/internal/identity"
+	"github.com/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/syncer"
+	"github.com/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/internal/watch"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 var version = "0.0.0-dev"

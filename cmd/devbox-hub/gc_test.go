@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
-	"git.shoemoney.ai/shoemoney/devbox/internal/syncer"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/internal/hub"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/syncer"
+	"github.com/shoemoney/devbox/internal/transport"
 )
 
 func writeFile(t *testing.T, root, rel, content string) {

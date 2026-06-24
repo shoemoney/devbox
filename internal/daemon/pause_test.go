@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/hub"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/transport"
 )
 
 // absent reports whether path stays absent for the whole window. It's the

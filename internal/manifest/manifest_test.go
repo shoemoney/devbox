@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/ignore"
+	"github.com/shoemoney/devbox/internal/secret"
 )
 
 func write(t *testing.T, root, rel, content string) {

@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
-	"git.shoemoney.ai/shoemoney/devbox/internal/control"
+	"github.com/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/control"
 )
 
 func pauseCmd() *cobra.Command {

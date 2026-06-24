@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // The request-size caps (maxBlobBytes/maxJSONBytes) are enforced by

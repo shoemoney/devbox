@@ -9,13 +9,13 @@ import (
 	"sort"
 	"strings"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
-	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/internal/hooks"
+	"github.com/shoemoney/devbox/internal/ignore"
+	"github.com/shoemoney/devbox/internal/manifest"
+	"github.com/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // Result summarizes a push.

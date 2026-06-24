@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // broker fans hub change events out to connected SSE subscribers. A slow

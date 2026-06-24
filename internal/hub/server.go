@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/dashboard"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/identity"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/dashboard"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/identity"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // Request body caps, enforced via http.MaxBytesReader to bound the DoS surface

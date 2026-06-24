@@ -1,4 +1,4 @@
-module git.shoemoney.ai/shoemoney/devbox
+module github.com/shoemoney/devbox
 
 go 1.26
 

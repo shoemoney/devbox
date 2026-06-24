@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // enroll joins a device and returns its bearer token.

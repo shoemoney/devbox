@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/config"
 )
 
 func TestProtectedMounts(t *testing.T) {

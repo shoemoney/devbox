@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/hub/meta"
 )
 
 // TestStateAndEvents covers both dashboard surfaces: /api/state reflects the DB,

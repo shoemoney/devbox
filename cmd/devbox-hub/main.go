@@ -14,11 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/dashboard"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
+	"github.com/shoemoney/devbox/internal/hub"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/dashboard"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/manifest"
 )
 
 // isLoopback reports whether addr binds only to a loopback interface.

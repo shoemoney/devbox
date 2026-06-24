@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/internal/chunk"
 )
 
 // GetBlob must reject bytes whose BLAKE3 hash doesn't match the requested key —

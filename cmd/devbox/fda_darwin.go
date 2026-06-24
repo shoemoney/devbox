@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/config"
 )
 
 // protectedMounts returns the local mount paths that live under a macOS TCC-

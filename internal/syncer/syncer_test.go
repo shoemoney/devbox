@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/blobstore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/hub/meta"
-	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/internal/hub"
+	"github.com/shoemoney/devbox/internal/hub/blobstore"
+	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/manifest"
+	"github.com/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/transport"
 )
 
 // joinDevice enrolls a fresh device against srv with a freshly-minted token.

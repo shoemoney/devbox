@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // Client talks to one hub. The zero value is not usable; call New.

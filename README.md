@@ -292,6 +292,7 @@ curl -fsSL https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/late
 <details><summary>🪟 Windows · 🍎 macOS Full Disk Access · 🛠️ knobs</summary>
 
 - **Windows:** `irm https://git.shoemoney.ai/shoemoney/devbox-dist/releases/download/latest/install.ps1 | iex` — copies `devbox.exe`, adds it to PATH, and (optionally) a restart-on-failure **Scheduled Task** at logon. Notes Controlled Folder Access if you have it on.
+- **From Go (have a toolchain):** `go install github.com/shoemoney/devbox/cmd/devbox@latest` (hub: `…/cmd/devbox-hub@latest`).
 - **macOS Full Disk Access:** to sync `~/Desktop`, `~/Documents`, `~/Downloads`, or **iCloud**, grant Full Disk Access to the `devbox` binary (System Settings → Privacy & Security → Full Disk Access). `devbox doctor` tests your actual mounts and tells you the exact fix + a deep link — a background daemon can't show the per-folder prompt, so without it those mounts silently fail.
 - **Knobs:** `--bin-dir DIR` · `--hub` · `--service` / `--no-service` · `--release-url URL` (or the `DEVBOX_*` env equivalents). No prebuilt release? The script falls back to a local `dist/` (run `scripts/build-release.sh`) or `go build`.
 - **Service control:** `systemctl --user {status,disable} devbox` (Linux) · `launchctl unload ~/Library/LaunchAgents/ai.shoemoney.devbox.plist` (mac).

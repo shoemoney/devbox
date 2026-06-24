@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/hooks"
-	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/manifest"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
-	"git.shoemoney.ai/shoemoney/devbox/internal/transport"
+	"github.com/shoemoney/devbox/internal/hooks"
+	"github.com/shoemoney/devbox/internal/ignore"
+	"github.com/shoemoney/devbox/internal/manifest"
+	"github.com/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/transport"
 )
 
 // PullResult summarizes applying a remote head to the local tree.

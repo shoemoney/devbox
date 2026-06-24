@@ -3,7 +3,7 @@
 // of .devignore. This is the "secrets never leave the machine" guarantee.
 package secret
 
-import "git.shoemoney.ai/shoemoney/devbox/internal/ignore"
+import "github.com/shoemoney/devbox/internal/ignore"
 
 // DefaultPatterns are always blocked from upload. Gitignore syntax, so the
 // .env.example re-include works via last-match-wins. Users can un-block a

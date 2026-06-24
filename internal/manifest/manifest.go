@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"git.shoemoney.ai/shoemoney/devbox/internal/chunk"
-	"git.shoemoney.ai/shoemoney/devbox/internal/ignore"
-	"git.shoemoney.ai/shoemoney/devbox/internal/secret"
+	"github.com/shoemoney/devbox/internal/chunk"
+	"github.com/shoemoney/devbox/internal/ignore"
+	"github.com/shoemoney/devbox/internal/secret"
 )
 
 // Entry is one regular file in a manifest. Path is forward-slash, relative to root.

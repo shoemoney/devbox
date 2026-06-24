@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.shoemoney.ai/shoemoney/devbox/pkg/proto"
+	"github.com/shoemoney/devbox/pkg/proto"
 )
 
 // writeJSON is a tiny helper for the stub hub.
