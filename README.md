@@ -376,7 +376,7 @@ container automatically. 🪄
 | `devbox publish <dir> <name>` | 📂 Create a share from a local folder + push it |
 | `devbox unmount <share>` | ⏏️ Stop syncing a mount (files stay on disk) |
 | `devbox start` / `stop` | ▶️⏹️ Run / stop the daemon |
-| `devbox status` `[--json]` | 📊 Device, hub, mounts (with `ro`/`pinned`), per-mount sync-age **and last sync error** (`⚠️ last sync failed: …`); `--json` exposes `last_err` (prefers live daemon state) |
+| `devbox status` `[--json]` | 📊 Device, hub, mounts (with `ro`/`pinned`), per-mount sync-age **and last sync error** (`⚠️ last sync failed: …`); ⚠️ says when the **daemon isn't running** (no silent stale state); `--json` exposes `last_err` (prefers live daemon state) |
 | `devbox log <share>` `[--json]` | 🕰️ Snapshot history (full ids); `--json` for machine-readable output |
 | `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
@@ -406,7 +406,7 @@ container automatically. 🪄
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
 | `devbox-hub backup <dir>` | 💾 Disaster-recovery snapshot: consistent DB copy (`VACUUM INTO`) + the blob tree into `<dir>` |
-| `devbox-hub fsck` `[--json]` | 🔬 At-rest integrity scan: re-hash every blob, flag bit-rot/corruption (non-zero exit if any) — pairs with `backup` for DR confidence |
+| `devbox-hub fsck` `[--json]` | 🔬 Integrity scan: re-hash every blob (bit-rot) **and** flag dangling snapshots (manifest → missing blob); non-zero exit on either — pairs with `backup` for DR confidence |
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
 | `devbox-hub serve --metrics-token <tok>` | 🔐 Require a token for `/metrics` — close the unauthenticated leak on a WAN-exposed hub |
