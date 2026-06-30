@@ -91,6 +91,48 @@ func TestStateAndEvents(t *testing.T) {
 	t.Fatal("did not receive the push event over SSE")
 }
 
+// TestDashboardAuth covers SetToken: open API calls are rejected, while the
+// token via query param or Authorization header is accepted (and a wrong one isn't).
+func TestDashboardAuth(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	d := New(db, "t")
+	d.SetToken("s3cret")
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	c := srv.Client()
+
+	get := func(url string, bearer string) int {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		r, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r.StatusCode
+	}
+
+	if code := get(srv.URL+"/api/state", ""); code != http.StatusUnauthorized {
+		t.Fatalf("no token: got %d, want 401", code)
+	}
+	if code := get(srv.URL+"/api/state", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("wrong bearer: got %d, want 401", code)
+	}
+	if code := get(srv.URL+"/api/state", "s3cret"); code != http.StatusOK {
+		t.Fatalf("correct bearer: got %d, want 200", code)
+	}
+	if code := get(srv.URL+"/api/state?token=s3cret", ""); code != http.StatusOK {
+		t.Fatalf("query token: got %d, want 200", code)
+	}
+}
+
 // TestEmitNilSafe documents that hub handlers can Emit unconditionally.
 func TestEmitNilSafe(t *testing.T) {
 	var d *Dashboard

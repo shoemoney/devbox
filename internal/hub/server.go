@@ -79,7 +79,29 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathInvite, s.auth(s.handleInvite))
 	mux.HandleFunc("GET "+proto.PathEvents, s.auth(s.handleEvents))
 	mux.HandleFunc("GET "+proto.PathMetrics, s.handleMetrics)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	return mux
+}
+
+// handleHealthz is a liveness probe: the process is up and serving. No auth, no
+// I/O — for Docker HEALTHCHECK and load balancers (the compose selfheal profile
+// restarts on unhealthy). /readyz is the deeper check.
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, "ok")
+}
+
+// handleReadyz is a readiness probe: 200 only if the metadata DB answers a cheap
+// query, else 503 so an orchestrator can hold traffic off a hub that's up but
+// whose DB is locked/unreachable (which /metrics, also a Count, can't signal as 503).
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	if _, err := s.db.Count("devices"); err != nil {
+		http.Error(w, "not ready: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, "ready")
 }
 
 // auth wraps a handler, requiring a valid "Authorization: Bearer <tok>" that

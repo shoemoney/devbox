@@ -98,7 +98,7 @@ func TestGCDropsOldUniqueChunks(t *testing.T) {
 	}
 
 	// gc keeping only the newest snapshot (v2 == head): v1 is pruned.
-	snaps, chunks, err := runGC(db, store, 1)
+	snaps, chunks, err := runGC(db, store, 1, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -140,6 +140,82 @@ func TestGCDropsOldUniqueChunks(t *testing.T) {
 		if has, _ := store.Has(h); !has {
 			t.Fatalf("head chunk %s must survive gc", h)
 		}
+	}
+}
+
+// TestGCDryRun asserts --dry-run reports the same counts the real sweep would
+// remove while deleting nothing, then that the real run matches those counts.
+func TestGCDryRun(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := blobstore.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(hub.NewServer(db, store).Handler())
+	defer srv.Close()
+
+	if err := db.CreateToken(hub.HashToken("tok"), time.Now().Unix()+3600); err != nil {
+		t.Fatal(err)
+	}
+	c := transport.New(srv.URL)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := c.Join("tok", "dev", pub, priv); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Publish("proj"); err != nil {
+		t.Fatal(err)
+	}
+	guard, _ := secret.New(nil)
+	root := t.TempDir()
+	ig, _ := syncer.LoadIgnore(root)
+
+	writeFile(t, root, "shared.txt", "stable content\n")
+	writeFile(t, root, "only-v1.txt", "this file vanishes in v2\n")
+	v1, err := syncer.Push(c, root, "proj", "", ig, guard, "", nil)
+	if err != nil {
+		t.Fatalf("push v1: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "only-v1.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "only-v2.txt", "fresh in v2\n")
+	v2, err := syncer.Push(c, root, "proj", "", ig, guard, v1.Head, nil)
+	if err != nil {
+		t.Fatalf("push v2: %v", err)
+	}
+	uniqueV1 := diff(manifestChunksOrFail(t, store, v1.Snapshot), manifestChunksOrFail(t, store, v2.Snapshot))
+	if len(uniqueV1) == 0 {
+		t.Fatal("test setup: expected at least one v1-only chunk")
+	}
+
+	// Dry-run reports what would go, deletes nothing.
+	dSnaps, dChunks, err := runGC(db, store, 1, true)
+	if err != nil {
+		t.Fatalf("dry-run gc: %v", err)
+	}
+	if dSnaps != 1 || dChunks != len(uniqueV1) {
+		t.Fatalf("dry-run reported %d snaps / %d chunks, want 1 / %d", dSnaps, dChunks, len(uniqueV1))
+	}
+	if has, _ := store.Has(v1.Snapshot); !has {
+		t.Fatal("dry-run must NOT delete the v1 manifest blob")
+	}
+	for _, h := range uniqueV1 {
+		if has, _ := store.Has(h); !has {
+			t.Fatalf("dry-run must NOT delete chunk %s", h)
+		}
+	}
+
+	// Real run matches the dry-run prediction.
+	rSnaps, rChunks, err := runGC(db, store, 1, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if rSnaps != dSnaps || rChunks != dChunks {
+		t.Fatalf("real gc removed %d snaps / %d chunks, dry-run predicted %d / %d", rSnaps, rChunks, dSnaps, dChunks)
 	}
 }
 

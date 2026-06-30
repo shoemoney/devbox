@@ -6,10 +6,12 @@
 package dashboard
 
 import (
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +59,7 @@ type Dashboard struct {
 	version string
 	started time.Time
 	broker  *broker
+	token   string // optional shared secret; "" = unauthenticated (loopback default)
 
 	mu       sync.Mutex
 	lastSeen map[string]int64 // deviceID -> unix seconds of its last activity
@@ -67,6 +70,11 @@ type Dashboard struct {
 func New(db *meta.DB, version string) *Dashboard {
 	return &Dashboard{db: db, version: version, started: time.Now(), broker: newBroker(), lastSeen: map[string]int64{}}
 }
+
+// SetToken requires callers to present the token (so a non-loopback dashboard
+// isn't world-readable). Empty token leaves it open. Must be called before
+// Handler.
+func (d *Dashboard) SetToken(tok string) { d.token = tok }
 
 // Emit records device activity and fans the event out to connected dashboards.
 // Safe on a nil receiver (dashboard disabled) so hub handlers call it freely.
@@ -141,7 +149,47 @@ func (d *Dashboard) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/state", d.handleState)
 	mux.HandleFunc("GET /api/events", d.handleEvents)
-	return mux
+	return d.withAuth(mux)
+}
+
+const dashCookie = "devbox_dash"
+
+// withAuth gates the dashboard behind d.token when one is set. The token may be
+// presented as `?token=`, an `Authorization: Bearer` header (for scripts), or a
+// cookie. A `?token=` on any request pins an HttpOnly cookie so the embedded
+// page's fetch()/EventSource calls — which can't set headers — authenticate
+// automatically; this keeps index.html untouched. Open (no token) → pass-through.
+func (d *Dashboard) withAuth(next http.Handler) http.Handler {
+	if d.token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query().Get("token"); q != "" && tokenEqual(q, d.token) {
+			http.SetCookie(w, &http.Cookie{Name: dashCookie, Value: d.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			if r.URL.Path == "/" { // drop the secret from the address bar / history
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		const bp = "Bearer "
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, bp) && tokenEqual(h[len(bp):], d.token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if ck, err := r.Cookie(dashCookie); err == nil && tokenEqual(ck.Value, d.token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="devbox dashboard"`)
+		http.Error(w, "unauthorized — open the dashboard with ?token=<dashboard token>", http.StatusUnauthorized)
+	})
+}
+
+// tokenEqual compares in constant time so a wrong guess leaks no length/prefix timing.
+func tokenEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 type stateResp struct {

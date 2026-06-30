@@ -78,7 +78,7 @@ func TestGCKeepsChunksSharedAcrossShares(t *testing.T) {
 	}
 
 	// GC keeping only each share's head.
-	if _, _, err := runGC(db, store, 1); err != nil {
+	if _, _, err := runGC(db, store, 1, false); err != nil {
 		t.Fatalf("gc: %v", err)
 	}
 

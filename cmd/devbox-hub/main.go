@@ -72,7 +72,7 @@ func openDB(data string) (*meta.DB, error) {
 }
 
 func serveCmd() *cobra.Command {
-	var data, listen, dashAddr string
+	var data, listen, dashAddr, dashToken string
 	var dash bool
 	var gcEvery time.Duration
 	var gcKeep int
@@ -96,9 +96,14 @@ func serveCmd() *cobra.Command {
 			var d *dashboard.Dashboard
 			if dash {
 				d = dashboard.New(db, version)
+				if dashToken != "" {
+					d.SetToken(dashToken)
+				}
 				srv.WithDashboard(d)
-				if !isLoopback(dashAddr) {
-					fmt.Fprintf(out, "⚠️  dashboard on %s is UNAUTHENTICATED and not loopback — anyone who can reach it sees hub activity. SSH-tunnel instead, or you accept this.\n", dashAddr)
+				if dashToken != "" {
+					fmt.Fprintf(out, "🔐 dashboard requires a token — open http://%s/?token=<token>\n", dashAddr)
+				} else if !isLoopback(dashAddr) {
+					fmt.Fprintf(out, "⚠️  dashboard on %s is UNAUTHENTICATED and not loopback — anyone who can reach it sees hub activity. Pass --dashboard-token, SSH-tunnel instead, or you accept this.\n", dashAddr)
 				}
 				go func() {
 					ds := &http.Server{Addr: dashAddr, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -118,7 +123,7 @@ func serveCmd() *cobra.Command {
 					t := time.NewTicker(gcEvery)
 					defer t.Stop()
 					for range t.C {
-						snaps, chunks, err := runGC(db, store, gcKeep)
+						snaps, chunks, err := runGC(db, store, gcKeep, false)
 						if err != nil {
 							fmt.Fprintf(out, "gc sweep error: %v\n", err)
 							continue
@@ -150,6 +155,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&listen, "listen", ":8080", "listen address")
 	cmd.Flags().BoolVar(&dash, "dashboard", false, "serve the live web dashboard")
 	cmd.Flags().StringVar(&dashAddr, "dashboard-addr", "127.0.0.1:8099", "dashboard listen address (loopback by default — unauthenticated)")
+	cmd.Flags().StringVar(&dashToken, "dashboard-token", "", "require this token to view the dashboard (recommended for non-loopback binds)")
 	cmd.Flags().DurationVar(&gcEvery, "gc-every", 0, "run in-process GC on this interval (0 = off; e.g. 24h) — animates on the dashboard")
 	cmd.Flags().IntVar(&gcKeep, "gc-keep", 10, "snapshots to keep per share when --gc-every sweeps")
 	return cmd
@@ -354,6 +360,7 @@ func principalCmd() *cobra.Command {
 func gcCmd() *cobra.Command {
 	var data string
 	var keep int
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "🧹 prune old snapshots and unreferenced chunks",
@@ -367,16 +374,21 @@ func gcCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			snaps, chunks, err := runGC(db, store, keep)
+			snaps, chunks, err := runGC(db, store, keep, dryRun)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "🧹 gc: removed %d snapshots, %d chunks (freed)\n", snaps, chunks)
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "🔍 gc --dry-run: would remove %d snapshots, %d chunks (nothing deleted)\n", snaps, chunks)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "🧹 gc: removed %d snapshots, %d chunks (freed)\n", snaps, chunks)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
 	cmd.Flags().IntVar(&keep, "keep", 10, "snapshots to keep per share (newest)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pruned without deleting anything")
 	return cmd
 }
 
@@ -386,7 +398,7 @@ func gcCmd() *cobra.Command {
 // regardless of refcounts. That makes GC safe even when refcounts are off — e.g.
 // content-addressed snapshot ids are shared across shares, so a naive per-share
 // refcount can undercount a chunk that two share heads both need.
-func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err error) {
+func runGC(db *meta.DB, store blobstore.Store, keep int, dryRun bool) (snaps, chunks int, err error) {
 	shares, err := db.ShareNames()
 	if err != nil {
 		return 0, 0, err
@@ -445,6 +457,39 @@ func runGC(db *meta.DB, store blobstore.Store, keep int) (snaps, chunks int, err
 		for _, h := range hashes {
 			reachable[h] = true
 		}
+	}
+
+	// --dry-run: report what WOULD be pruned without mutating. Deletable chunks are
+	// those a pruned manifest references but no kept snapshot does, plus any
+	// pre-existing orphan (refcount<=0) that's also unreachable — the same set the
+	// real sweep removes, computed from reachability (refcount ground truth).
+	if dryRun {
+		del := map[string]bool{}
+		for _, p := range prunable {
+			if keptSnaps[p.id] {
+				continue
+			}
+			snaps++
+			hashes, err := manifestChunks(store, p.id)
+			if err != nil && err != blobstore.ErrNotFound {
+				return 0, 0, err
+			}
+			for _, h := range hashes {
+				if !reachable[h] {
+					del[h] = true
+				}
+			}
+		}
+		unref, err := db.UnreferencedChunks()
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, h := range unref {
+			if !reachable[h] {
+				del[h] = true
+			}
+		}
+		return snaps, len(del), nil
 	}
 
 	// Prune each (share, id): delete that share's row and decrement its chunks. The
