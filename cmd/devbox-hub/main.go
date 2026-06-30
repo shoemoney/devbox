@@ -136,7 +136,13 @@ func serveCmd() *cobra.Command {
 					t := time.NewTicker(gcEvery)
 					defer t.Stop()
 					for range t.C {
+						release, lerr := dataLock(data) // serialize with `backup` so a sweep can't strand a backup mid-copy
+						if lerr != nil {
+							fmt.Fprintf(out, "gc sweep lock error: %v\n", lerr)
+							continue
+						}
 						snaps, chunks, err := runGC(db, store, gcKeep, 0, false)
+						release()
 						if err != nil {
 							fmt.Fprintf(out, "gc sweep error: %v\n", err)
 							continue
@@ -422,6 +428,15 @@ func gcCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A real sweep deletes blobs, so serialize with `backup` (dry-run is
+			// read-only and must not block on a long backup, so it skips the lock).
+			if !dryRun {
+				release, lerr := dataLock(data)
+				if lerr != nil {
+					return lerr
+				}
+				defer release()
+			}
 			snaps, chunks, err := runGC(db, store, keep, keepDays, dryRun)
 			if err != nil {
 				return err
@@ -658,6 +673,15 @@ func backupCmd() *cobra.Command {
 				return err
 			}
 			defer db.Close()
+			// Hold the data lock across BOTH the DB snapshot and the blob copy so a
+			// concurrent gc sweep can't delete a blob the snapshot references mid-copy,
+			// leaving an internally-inconsistent backup (a dangling ref you'd only
+			// discover on restore). DB-first then blobs is the correct order.
+			release, lerr := dataLock(data)
+			if lerr != nil {
+				return lerr
+			}
+			defer release()
 			if err := db.BackupTo(filepath.Join(destDir, "devbox-hub.db")); err != nil {
 				return err
 			}
@@ -815,8 +839,8 @@ func fsckCmd() *cobra.Command {
 
 			if asJSON {
 				type result struct {
-					Scanned  int            `json:"scanned"`
-					Corrupt  []corruptEntry `json:"corrupt"`
+					Scanned  int             `json:"scanned"`
+					Corrupt  []corruptEntry  `json:"corrupt"`
 					Dangling []danglingEntry `json:"dangling"`
 				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
