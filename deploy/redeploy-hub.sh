@@ -66,11 +66,18 @@ rollback() {
   echo "🛑 redeploy FAILED — rolled back to the previous binary"; exit 1
 }
 curl --retry 20 --retry-connrefused --retry-delay 1 --max-time 25 -sf "$URL/metrics" >/dev/null || rollback
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/v1/invite/revoke")
-[ "$code" = 401 ] || { echo "  ✗ /v1/invite/revoke = $code (want 401 — new code not live)"; rollback; }
-echo "  ✓ /v1/invite/revoke present (401 unauth) — P2 code is LIVE"
+# Marker: /healthz is the clean old→new discriminator — the pre-round-1 hub 404s
+# it, the new code returns 200 "ok <version>". (invite/revoke is already 401 on the
+# live M8a hub, so it can no longer prove the swap took.)
+code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")
+[ "$code" = 200 ] || { echo "  ✗ /healthz = $code (want 200 — new code not live; the old hub 404s it)"; rollback; }
+echo "  ✓ /healthz present (200) — new hub code is LIVE: $(curl -s --max-time 5 "$URL/healthz")"
+# /readyz pings the DB — proves the metadata store opened post-migration.
+rcode=$(curl -s -o /dev/null -w '%{http_code}' "$URL/readyz")
+[ "$rcode" = 200 ] || { echo "  ✗ /readyz = $rcode (DB not ready)"; rollback; }
+echo "  ✓ /readyz present (200) — metadata DB is reachable"
 
 say "🔢 post-deploy counts (compare to pre — device/share/chunk should match)"
 echo "$(counts)"
 
-say "✅ hub redeployed safely — P2 (+s attenuation · invite revocation) + P3 (gc-every) are live."
+say "✅ hub redeployed safely — 7 rounds live (push-verify, HTTP_PROXY fix, backup⇄gc flock, fsck, /healthz+/readyz, /metrics counters, device/share ls, …)."
