@@ -376,7 +376,7 @@ container automatically. 🪄
 | `devbox publish <dir> <name>` | 📂 Create a share from a local folder + push it |
 | `devbox unmount <share>` | ⏏️ Stop syncing a mount (files stay on disk) |
 | `devbox start` / `stop` | ▶️⏹️ Run / stop the daemon |
-| `devbox status` `[--json]` | 📊 Device, hub, mounts (with `ro`/`pinned`); `--json` for scripting (prefers live daemon state) |
+| `devbox status` `[--json]` | 📊 Device, hub, mounts (with `ro`/`pinned`), per-mount sync-age **and last sync error** (`⚠️ last sync failed: …`); `--json` exposes `last_err` (prefers live daemon state) |
 | `devbox log <share>` `[--json]` | 🕰️ Snapshot history (full ids); `--json` for machine-readable output |
 | `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
@@ -409,6 +409,8 @@ container automatically. 🪄
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
 | `devbox-hub serve --metrics-token <tok>` | 🔐 Require a token for `/metrics` — close the unauthenticated leak on a WAN-exposed hub |
 | `devbox-hub serve --access-log` | 📝 Log one line per request (method, path, status, bytes, addr) for WAN forensics |
+| `devbox-hub serve` (startup) | 🛰️ Logs build version + dashboard state; ⚠️ warns if `--listen` is non-loopback (plain HTTP → cleartext bearers without the TLS proxy) |
+| `devbox-hub serve` (SIGTERM) | 🛑 Graceful shutdown — drains in-flight requests via `http.Server.Shutdown`, so the hardened redeploy swaps cleanly |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
 | `devbox-hub gc [--dry-run] [--keep <n>] [--keep-days <n>]` | 🧹 GC unreferenced chunks; `--dry-run` previews, `--keep` keeps N newest/share, `--keep-days` also keeps anything from the last N days |
 | `GET /healthz` · `GET /readyz` | 🩺 Liveness (`/healthz` reports the build version) / readiness (`/readyz` pings the DB → 503 if unreachable) for Docker/LB |
