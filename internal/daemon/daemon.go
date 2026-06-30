@@ -385,15 +385,17 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 }
 
 func (d *Daemon) report(m config.Mount, pr syncer.PullResult) {
-	if len(pr.Written)+len(pr.Deleted)+len(pr.Conflicts)+len(pr.Skipped) == 0 {
-		return
+	if len(pr.Written)+len(pr.Deleted)+len(pr.Conflicts)+len(pr.Skipped) > 0 {
+		d.logf("📥 %s: %d written, %d deleted, %d conflicts, %d skipped",
+			m.Share, len(pr.Written), len(pr.Deleted), len(pr.Conflicts), len(pr.Skipped))
+		for _, cf := range pr.Conflicts {
+			d.logf("   💥 conflict copy: %s", cf)
+		}
+		for _, sk := range pr.Skipped {
+			d.logf("   ⚠️  skipped (filesystem clash): %s", sk)
+		}
 	}
-	d.logf("📥 %s: %d written, %d deleted, %d conflicts, %d skipped",
-		m.Share, len(pr.Written), len(pr.Deleted), len(pr.Conflicts), len(pr.Skipped))
-	for _, cf := range pr.Conflicts {
-		d.logf("   💥 conflict copy: %s", cf)
-	}
-	for _, sk := range pr.Skipped {
-		d.logf("   ⚠️  skipped (filesystem clash): %s", sk)
+	for _, w := range pr.Warnings {
+		d.logf("⚠️  %s: %s", m.Share, w)
 	}
 }

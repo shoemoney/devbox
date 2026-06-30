@@ -65,6 +65,37 @@ func TestPostPullHookFires(t *testing.T) {
 	}
 }
 
+// TestPostPullHookWarningOnFailure proves a failing post-pull hook surfaces in
+// PullResult.Warnings without aborting the sync.
+func TestPostPullHookWarningOnFailure(t *testing.T) {
+	db, _ := meta.Open(":memory:")
+	defer db.Close()
+	store, _ := blobstore.NewDisk(t.TempDir())
+	srv := httptest.NewServer(hub.NewServer(db, store).Handler())
+	defer srv.Close()
+	guard, _ := secret.New(nil)
+	ig, _ := LoadIgnore(t.TempDir())
+
+	A := joinDevice(t, db, srv.URL, "alice")
+	B := joinDevice(t, db, srv.URL, "bob")
+	_ = A.Publish("s")
+	rootA := t.TempDir()
+	writeFile(t, rootA, "app.txt", "v1\n")
+	if _, _, err := Sync(A, rootA, "s", "", "", "alice", 1, ig, guard, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rootB := t.TempDir()
+	writeExecHook(t, rootB, "post-pull", "#!/usr/bin/env bash\nexit 1\n")
+	_, pr, err := Sync(B, rootB, "s", "", "", "bob", 2, ig, guard, quietRunner(rootB, "s"))
+	if err != nil {
+		t.Fatalf("sync must not fail when post-pull exits non-zero: %v", err)
+	}
+	if len(pr.Warnings) == 0 {
+		t.Fatal("expected Warnings from the failing post-pull hook, got none")
+	}
+}
+
 func TestPrePushHookVetoes(t *testing.T) {
 	db, _ := meta.Open(":memory:")
 	defer db.Close()

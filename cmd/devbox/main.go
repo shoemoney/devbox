@@ -557,15 +557,19 @@ func ignoreCmd() *cobra.Command {
 		Short: "🙈 append a pattern to ./.devignore (run from inside a mount)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			pat := args[0]
+			if _, err := ignore.Compile([]string{pat}); err != nil {
+				return fmt.Errorf("invalid ignore pattern %q: %w", pat, err)
+			}
 			f, err := os.OpenFile(".devignore", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
 				return err
 			}
 			defer f.Close()
-			if _, err := fmt.Fprintln(f, args[0]); err != nil {
+			if _, err := fmt.Fprintln(f, pat); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "🙈 added %q to ./.devignore (applies on next sync)\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "🙈 added %q to ./.devignore (applies on next sync)\n", pat)
 			return nil
 		},
 	}
@@ -1098,6 +1102,23 @@ func doctorCmd() *cobra.Command {
 					check(true, false, label, mode)
 				} else {
 					check(false, false, label, "local dir missing or not writable")
+				}
+			}
+
+			// Disk space: warn (not fail) when a mount dir or the config dir has < 1 GiB free.
+			diskPaths := []string{dir}
+			for _, m := range d.Mounts {
+				diskPaths = append(diskPaths, m.Local)
+			}
+			for _, p := range diskPaths {
+				free, ok := freeBytes(p)
+				if !ok {
+					continue // unsupported platform or stat failed; skip silently
+				}
+				if free < 1<<30 {
+					check(false, true, "disk space", fmt.Sprintf("%s has only %d MiB free", p, free>>20))
+				} else {
+					check(true, false, "disk space", fmt.Sprintf("%s has %d MiB free", p, free>>20))
 				}
 			}
 

@@ -22,6 +22,7 @@ type PullResult struct {
 	Conflicts []string // conflict copies created (local edits preserved beside canonical)
 	Skipped   []string // paths a filesystem error skipped (e.g. file<->dir clash)
 	Vetoed    bool     // a pre-pull hook aborted applying inbound changes
+	Warnings  []string // non-fatal hook errors (e.g. post-pull timed out)
 }
 
 // Pull fetches the hub head manifest for share, three-way merges it against the
@@ -152,9 +153,13 @@ func Pull(c *transport.Client, root, share, subpath, base, host string, now int6
 	}
 
 	if len(res.Conflicts) > 0 {
-		_ = hk.Run(hooks.OnConflict, res.Conflicts, head)
+		if err := hk.Run(hooks.OnConflict, res.Conflicts, head); err != nil {
+			res.Warnings = append(res.Warnings, err.Error())
+		}
 	}
-	_ = hk.Run(hooks.PostPull, append(append([]string{}, res.Written...), res.Deleted...), head)
+	if err := hk.Run(hooks.PostPull, append(append([]string{}, res.Written...), res.Deleted...), head); err != nil {
+		res.Warnings = append(res.Warnings, err.Error())
+	}
 
 	res.Base = head
 	return res, nil

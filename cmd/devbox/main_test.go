@@ -176,6 +176,22 @@ func TestWritePidArbitration(t *testing.T) {
 	}
 }
 
+// TestIgnoreCmdValidatesPattern proves `ignore` accepts valid patterns and writes to .devignore.
+func TestIgnoreCmdValidatesPattern(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var buf bytes.Buffer
+	cmd := ignoreCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"*.go"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("valid pattern *.go rejected: %v", err)
+	}
+	b, _ := os.ReadFile(".devignore")
+	if !strings.Contains(string(b), "*.go") {
+		t.Fatalf(".devignore missing pattern, got: %q", string(b))
+	}
+}
+
 // TestStatusDaemonNotRunning proves that `status` (non-JSON) warns the user
 // when the device is joined but the daemon is not running.
 func TestStatusDaemonNotRunning(t *testing.T) {
