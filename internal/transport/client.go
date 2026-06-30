@@ -61,8 +61,8 @@ func New(base string) *Client {
 			tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 			tr.TLSHandshakeTimeout = 10 * time.Second
 			tr.ResponseHeaderTimeout = 30 * time.Second
-			tr.DisableCompression = true  // we negotiate gzip explicitly so the rate limiter sees wire bytes
-			tr.MaxIdleConnsPerHost = 16   // reuse connections for parallel blob transfers
+			tr.DisableCompression = true // we negotiate gzip explicitly so the rate limiter sees wire bytes
+			tr.MaxIdleConnsPerHost = 16  // reuse connections for parallel blob transfers
 			return &http.Client{Transport: tr}
 		}(),
 	}
@@ -156,7 +156,10 @@ func (c *Client) PutBlob(hash string, data []byte) error {
 
 // Events opens an SSE stream of hub change events (optionally filtered to one
 // share) and calls onEvent for each, until ctx is cancelled or the stream ends.
-// Uses a dedicated timeout-less client since the stream is long-lived.
+// Reuses c.hc: it bounds dial/TLS (so a black-holed connect can't hang the
+// reconnect loop forever) but has no TOTAL timeout, which is what a long-lived
+// SSE stream needs — the hub sends headers on connect so ResponseHeaderTimeout
+// never trips mid-stream. (A bare client here would also silently drop proxy env.)
 func (c *Client) Events(ctx context.Context, share string, onEvent func(proto.Event)) error {
 	u := c.base + proto.PathEvents
 	if share != "" {
@@ -167,7 +170,7 @@ func (c *Client) Events(ctx context.Context, share string, onEvent func(proto.Ev
 		return err
 	}
 	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := c.hc.Do(req)
 	if err != nil {
 		return err
 	}
