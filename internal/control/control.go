@@ -41,6 +41,7 @@ type MountState struct {
 	Pinned       bool   `json:"pinned"`
 	BaseSnapshot string `json:"base_snapshot"`
 	LastSyncUnix int64  `json:"last_sync_unix"` // 0 = not synced since daemon start
+	LastErr      string `json:"last_err,omitempty"` // last sync error message; empty = healthy
 }
 
 // Daemon is the slice of the running daemon the control server steers. The

@@ -775,6 +775,7 @@ type statusMount struct {
 	Pinned       bool   `json:"pinned"`
 	BaseSnapshot string `json:"base_snapshot,omitempty"`
 	LastSyncUnix int64  `json:"last_sync_unix,omitempty"`
+	LastErr      string `json:"last_err,omitempty"`
 }
 
 type statusJSON struct {
@@ -818,7 +819,7 @@ func statusCmd() *cobra.Command {
 						s.Mounts = append(s.Mounts, statusMount{
 							Share: m.Share, Subpath: m.Subpath, Local: m.Local,
 							ReadOnly: m.ReadOnly, Pinned: m.Pinned, BaseSnapshot: m.BaseSnapshot,
-							LastSyncUnix: m.LastSyncUnix,
+							LastSyncUnix: m.LastSyncUnix, LastErr: m.LastErr,
 						})
 					}
 				} else {
@@ -856,6 +857,9 @@ func statusCmd() *cobra.Command {
 						}
 						fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s  (%s)\n",
 							m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)), syncAge(m.LastSyncUnix))
+						if m.LastErr != "" {
+							fmt.Fprintf(out, "      ⚠️  last sync failed: %s\n", m.LastErr)
+						}
 					}
 					return nil
 				}

@@ -50,6 +50,7 @@ type Daemon struct {
 	nudges      map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
 	mounts      map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
 	lastSync    map[string]int64        // mountKey -> unix secs of last successful sync (0 = never)
+	lastErr     map[string]string       // mountKey -> last sync error message (empty = healthy)
 	resumeTimer *time.Timer             // pending auto-resume from PauseFor; nil if none
 }
 
@@ -84,13 +85,23 @@ func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) 
 		nudges:   map[string]func(){},
 		mounts:   map[string]config.Mount{},
 		lastSync: map[string]int64{},
+		lastErr:  map[string]string{},
 	}, nil
 }
 
-// recordSync stamps a mount's last successful sync time (for StateSnapshot / status).
+// recordSync stamps a mount's last successful sync time and clears any prior error.
 func (d *Daemon) recordSync(m config.Mount) {
 	d.mu.Lock()
-	d.lastSync[mountKey(m)] = time.Now().Unix()
+	k := mountKey(m)
+	d.lastSync[k] = time.Now().Unix()
+	delete(d.lastErr, k)
+	d.mu.Unlock()
+}
+
+// recordErr stores the last sync error for a mount (surfaced via StateSnapshot / status).
+func (d *Daemon) recordErr(m config.Mount, err error) {
+	d.mu.Lock()
+	d.lastErr[mountKey(m)] = err.Error()
 	d.mu.Unlock()
 }
 
@@ -328,6 +339,7 @@ func (d *Daemon) StateSnapshot() control.State {
 			Pinned:       m.Pinned,
 			BaseSnapshot: d.state[k],
 			LastSyncUnix: d.lastSync[k],
+			LastErr:      d.lastErr[k],
 		})
 	}
 	return st
@@ -341,6 +353,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	ig, err := syncer.LoadIgnoreWith(m.Local, excludes)
 	if err != nil {
 		d.logf("ignore %s: %v", m.Local, err)
+		d.recordErr(m, err)
 		return
 	}
 	base := d.getBase(m)
@@ -351,6 +364,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		pr, err := syncer.Pull(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard, hk)
 		if err != nil {
 			d.logf("pull %s: %v", m.Share, err)
+			d.recordErr(m, err)
 			return
 		}
 		d.setBase(m, pr.Base)
@@ -362,6 +376,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 	newBase, pr, err := syncer.Sync(c, m.Local, m.Share, m.Subpath, base, d.host, now, ig, d.guard, hk)
 	if err != nil {
 		d.logf("sync %s: %v", m.Share, err)
+		d.recordErr(m, err)
 		return
 	}
 	d.setBase(m, newBase)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -54,6 +55,47 @@ func waitFor(path, want string, d time.Duration) bool {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
+}
+
+// TestRecordErrSurfacedAndCleared verifies that recordErr surfaces the error in
+// StateSnapshot and that a subsequent recordSync clears it.
+func TestRecordErrSurfacedAndCleared(t *testing.T) {
+	d, err := New(t.TempDir(), config.Daemon{}, "h", t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := config.Mount{Share: "s", Local: t.TempDir(), Hub: "http://hub"}
+	k := mountKey(m)
+	// Register so StateSnapshot emits this mount.
+	d.mu.Lock()
+	d.mounts[k] = m
+	d.mu.Unlock()
+
+	d.recordErr(m, errors.New("boom"))
+
+	snap := d.StateSnapshot()
+	var got string
+	for _, ms := range snap.Mounts {
+		if mountKey(config.Mount{Share: ms.Share, Subpath: ms.Subpath, Local: ms.Local}) == k {
+			got = ms.LastErr
+		}
+	}
+	if got != "boom" {
+		t.Fatalf("expected LastErr=boom, got %q", got)
+	}
+
+	d.recordSync(m)
+	snap = d.StateSnapshot()
+	for _, ms := range snap.Mounts {
+		if mountKey(config.Mount{Share: ms.Share, Subpath: ms.Subpath, Local: ms.Local}) == k {
+			if ms.LastErr != "" {
+				t.Fatalf("expected LastErr cleared after recordSync, got %q", ms.LastErr)
+			}
+			if ms.LastSyncUnix == 0 {
+				t.Fatal("expected LastSyncUnix != 0 after recordSync")
+			}
+		}
+	}
 }
 
 // TestLiveTwoWaySyncViaSSE runs two daemons against one hub and proves a change
