@@ -98,7 +98,7 @@ func TestGCDropsOldUniqueChunks(t *testing.T) {
 	}
 
 	// gc keeping only the newest snapshot (v2 == head): v1 is pruned.
-	snaps, chunks, err := runGC(db, store, 1, false)
+	snaps, chunks, err := runGC(db, store, 1, 0, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestGCDryRun(t *testing.T) {
 	}
 
 	// Dry-run reports what would go, deletes nothing.
-	dSnaps, dChunks, err := runGC(db, store, 1, true)
+	dSnaps, dChunks, err := runGC(db, store, 1, 0, true)
 	if err != nil {
 		t.Fatalf("dry-run gc: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestGCDryRun(t *testing.T) {
 	}
 
 	// Real run matches the dry-run prediction.
-	rSnaps, rChunks, err := runGC(db, store, 1, false)
+	rSnaps, rChunks, err := runGC(db, store, 1, 0, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -256,4 +256,70 @@ func intersect(a, b []string) []string {
 		}
 	}
 	return out
+}
+
+// TestGCKeepDays proves that --keep-days keeps a snapshot still within the
+// time window even when it's outside the --keep newest-N window, and prunes it
+// once it's beyond both.
+func TestGCKeepDays(t *testing.T) {
+	twoDaysAgo := time.Now().Add(-48 * time.Hour).Unix()
+	now := time.Now().Unix()
+
+	setup := func(t *testing.T) (*meta.DB, blobstore.Store) {
+		t.Helper()
+		db, err := meta.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		store, err := blobstore.NewDisk(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AddDevice("d1", "dev", []byte("pub"), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.CreateShare("proj", "d1", now); err != nil {
+			t.Fatal(err)
+		}
+		// v1: 2 days old — beyond the keep=1 window but within 3 days.
+		if err := db.AddSnapshot(meta.Snapshot{
+			ID: "v1snap", Share: "proj", DeviceID: "d1",
+			ManifestHash: "v1snap", CreatedAt: twoDaysAgo,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		// v2: now — this becomes the head.
+		if err := db.AddSnapshot(meta.Snapshot{
+			ID: "v2snap", Share: "proj", DeviceID: "d1",
+			ManifestHash: "v2snap", CreatedAt: now,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		return db, store
+	}
+
+	// keepDays=3: v1 is 2 days old → within window → kept despite being beyond keep=1.
+	t.Run("within-keepDays", func(t *testing.T) {
+		db, store := setup(t)
+		snaps, _, err := runGC(db, store, 1, 3, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snaps != 0 {
+			t.Fatalf("keepDays=3: pruned %d snapshots, want 0 (v1 within 3-day window)", snaps)
+		}
+	})
+
+	// keepDays=1: v1 is 2 days old → beyond 1-day window → pruned.
+	t.Run("beyond-keepDays", func(t *testing.T) {
+		db, store := setup(t)
+		snaps, _, err := runGC(db, store, 1, 1, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snaps != 1 {
+			t.Fatalf("keepDays=1: pruned %d snapshots, want 1 (v1 beyond 1-day window)", snaps)
+		}
+	})
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func open(t *testing.T) *DB {
@@ -583,5 +584,63 @@ func TestMigrationFromV1WithData(t *testing.T) {
 	}
 	if ids, _ := db.SnapshotIDs("t"); len(ids) != 2 {
 		t.Fatalf("share t ids after new push = %v, want 2", ids)
+	}
+}
+
+// TestBackupTo verifies that BackupTo produces a readable copy of the database
+// that contains the same rows as the live DB.
+func TestBackupTo(t *testing.T) {
+	dir := t.TempDir()
+	// Use a file-backed DB — VACUUM INTO doesn't work on :memory:.
+	db, err := Open(filepath.Join(dir, "live.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.AddDevice("d1", "laptop", []byte("pub"), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "backup.db")
+	if err := db.BackupTo(dest); err != nil {
+		t.Fatalf("BackupTo: %v", err)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("backup file missing: %v", err)
+	}
+
+	bak, err := Open(dest)
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer bak.Close()
+	n, err := bak.Count("devices")
+	if err != nil {
+		t.Fatalf("backup Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("backup has %d devices, want 1", n)
+	}
+}
+
+// TestDeviceLsShowsDevice verifies that Devices() surfaces a joined device.
+func TestDeviceLsShowsDevice(t *testing.T) {
+	db := open(t)
+	now := time.Now().Unix()
+	if err := db.AddDevice("d1", "laptop", []byte("pub"), now); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Devices()
+	if err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Devices returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Name != "laptop" || rows[0].ID != "d1" {
+		t.Fatalf("unexpected row: %+v", rows[0])
+	}
+	if rows[0].Revoked {
+		t.Fatal("fresh device should not be revoked")
 	}
 }

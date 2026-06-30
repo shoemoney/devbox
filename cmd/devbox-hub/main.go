@@ -5,7 +5,11 @@ import (
 	"cmp"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -56,6 +60,8 @@ func main() {
 		memberCmd(),
 		principalCmd(),
 		gcCmd(),
+		backupCmd(),
+		deviceCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -72,8 +78,8 @@ func openDB(data string) (*meta.DB, error) {
 }
 
 func serveCmd() *cobra.Command {
-	var data, listen, dashAddr, dashToken string
-	var dash bool
+	var data, listen, dashAddr, dashToken, metricsToken string
+	var dash, accessLog bool
 	var gcEvery time.Duration
 	var gcKeep int
 	cmd := &cobra.Command{
@@ -88,7 +94,7 @@ func serveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			srv := hub.NewServer(db, store).SetVersion(version)
+			srv := hub.NewServer(db, store).SetVersion(version).SetMetricsToken(metricsToken)
 			out := cmd.OutOrStdout()
 
 			// Optional live dashboard on its own address (localhost by default so it
@@ -123,7 +129,7 @@ func serveCmd() *cobra.Command {
 					t := time.NewTicker(gcEvery)
 					defer t.Stop()
 					for range t.C {
-						snaps, chunks, err := runGC(db, store, gcKeep, false)
+						snaps, chunks, err := runGC(db, store, gcKeep, 0, false)
 						if err != nil {
 							fmt.Fprintf(out, "gc sweep error: %v\n", err)
 							continue
@@ -140,9 +146,13 @@ func serveCmd() *cobra.Command {
 			// Explicit timeouts bound the slowloris surface (bare ListenAndServe
 			// has none). No WriteTimeout on purpose: the /v1/events SSE stream is
 			// long-lived and a WriteTimeout would kill it mid-flight.
+			handler := srv.Handler()
+			if accessLog {
+				handler = hub.AccessLogMiddleware(handler)
+			}
 			httpSrv := &http.Server{
 				Addr:              listen,
-				Handler:           srv.Handler(),
+				Handler:           handler,
 				ReadHeaderTimeout: 10 * time.Second,
 				ReadTimeout:       30 * time.Second,
 				IdleTimeout:       120 * time.Second,
@@ -158,6 +168,8 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dashToken, "dashboard-token", "", "require this token to view the dashboard (recommended for non-loopback binds)")
 	cmd.Flags().DurationVar(&gcEvery, "gc-every", 0, "run in-process GC on this interval (0 = off; e.g. 24h) — animates on the dashboard")
 	cmd.Flags().IntVar(&gcKeep, "gc-keep", 10, "snapshots to keep per share when --gc-every sweeps")
+	cmd.Flags().StringVar(&metricsToken, "metrics-token", "", "require this token to access /metrics (empty = open)")
+	cmd.Flags().BoolVar(&accessLog, "access-log", false, "log one line per request to stderr (method, path, status, bytes, addr, duration)")
 	return cmd
 }
 
@@ -359,7 +371,7 @@ func principalCmd() *cobra.Command {
 
 func gcCmd() *cobra.Command {
 	var data string
-	var keep int
+	var keep, keepDays int
 	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "gc",
@@ -374,7 +386,7 @@ func gcCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			snaps, chunks, err := runGC(db, store, keep, dryRun)
+			snaps, chunks, err := runGC(db, store, keep, keepDays, dryRun)
 			if err != nil {
 				return err
 			}
@@ -388,17 +400,17 @@ func gcCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
 	cmd.Flags().IntVar(&keep, "keep", 10, "snapshots to keep per share (newest)")
+	cmd.Flags().IntVar(&keepDays, "keep-days", 0, "also keep snapshots newer than N days regardless of --keep (0 = disabled)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pruned without deleting anything")
 	return cmd
 }
 
-// runGC prunes deletable snapshots (keeping the head + `keep` newest per share)
-// and sweeps unreachable chunks. It is mark-and-sweep from every share's live
-// snapshots as roots: nothing reachable from a kept snapshot is ever deleted,
-// regardless of refcounts. That makes GC safe even when refcounts are off — e.g.
-// content-addressed snapshot ids are shared across shares, so a naive per-share
-// refcount can undercount a chunk that two share heads both need.
-func runGC(db *meta.DB, store blobstore.Store, keep int, dryRun bool) (snaps, chunks int, err error) {
+// runGC prunes deletable snapshots (keeping the head + `keep` newest per share,
+// and optionally any snapshot created within the last keepDays days) and sweeps
+// unreachable chunks. keepDays=0 preserves the existing behaviour exactly.
+// It is mark-and-sweep from every share's live snapshots as roots: nothing
+// reachable from a kept snapshot is ever deleted, regardless of refcounts.
+func runGC(db *meta.DB, store blobstore.Store, keep, keepDays int, dryRun bool) (snaps, chunks int, err error) {
 	shares, err := db.ShareNames()
 	if err != nil {
 		return 0, 0, err
@@ -410,6 +422,13 @@ func runGC(db *meta.DB, store blobstore.Store, keep int, dryRun bool) (snaps, ch
 	headSet := map[string]bool{}
 	for _, h := range heads {
 		headSet[h] = true
+	}
+
+	// Cutoff for --keep-days: snapshots created after this unix timestamp are kept
+	// even when outside the --keep newest-N window. Zero means "disabled".
+	var keepDaysCutoff int64
+	if keepDays > 0 {
+		keepDaysCutoff = time.Now().Add(-time.Duration(keepDays) * 24 * time.Hour).Unix()
 	}
 
 	// Partition snapshots into kept vs prunable. Snapshots are now per-(share, id),
@@ -429,13 +448,26 @@ func runGC(db *meta.DB, store blobstore.Store, keep int, dryRun bool) (snaps, ch
 		for _, id := range del {
 			delSet[id] = true
 		}
+		// Fetch timestamps once per share when --keep-days is active.
+		var timestamps map[string]int64
+		if keepDaysCutoff != 0 {
+			timestamps, err = db.SnapshotTimestamps(share)
+			if err != nil {
+				return 0, 0, err
+			}
+		}
 		ids, err := db.SnapshotIDs(share)
 		if err != nil {
 			return 0, 0, err
 		}
 		for _, id := range ids {
 			if delSet[id] && !headSet[id] {
-				prunable = append(prunable, snapRef{share, id})
+				// Keep if within the --keep-days window (timestamp >= cutoff).
+				if keepDaysCutoff != 0 && timestamps[id] >= keepDaysCutoff {
+					keptSnaps[id] = true
+				} else {
+					prunable = append(prunable, snapRef{share, id})
+				}
 			} else {
 				keptSnaps[id] = true
 			}
@@ -572,4 +604,123 @@ func randHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func backupCmd() *cobra.Command {
+	var data string
+	cmd := &cobra.Command{
+		Use:   "backup <dir>",
+		Short: "💾 snapshot the DB + blobs to a directory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			destDir := args[0]
+			if err := os.MkdirAll(destDir, 0o700); err != nil {
+				return err
+			}
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			if err := db.BackupTo(filepath.Join(destDir, "devbox-hub.db")); err != nil {
+				return err
+			}
+			// ponytail: blobs are a plain recursive copy; rsync/incremental is the upgrade path
+			srcBlobs := filepath.Join(data, "blobs")
+			dstBlobs := filepath.Join(destDir, "blobs")
+			var filesCopied, bytesCopied int64
+			walkErr := filepath.WalkDir(srcBlobs, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				rel, _ := filepath.Rel(srcBlobs, path)
+				dst := filepath.Join(dstBlobs, rel)
+				if d.IsDir() {
+					return os.MkdirAll(dst, 0o700)
+				}
+				in, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer in.Close()
+				out, err := os.Create(dst)
+				if err != nil {
+					return err
+				}
+				defer out.Close()
+				n, err := io.Copy(out, in)
+				if err != nil {
+					return err
+				}
+				filesCopied++
+				bytesCopied += n
+				return nil
+			})
+			if walkErr != nil && !errors.Is(walkErr, os.ErrNotExist) {
+				return walkErr
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "✅ backup: db + %d blobs (%d bytes) → %s\n", filesCopied, bytesCopied, destDir)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	return cmd
+}
+
+func deviceCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "device", Short: "🖥️  manage devices"}
+	var data string
+	var asJSON bool
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "list enrolled devices",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			devices, err := db.Devices()
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				type deviceView struct {
+					ID        string `json:"id"`
+					Name      string `json:"name"`
+					Principal string `json:"principal"`
+					LastSeen  int64  `json:"last_seen"`
+					Revoked   bool   `json:"revoked"`
+				}
+				out := make([]deviceView, len(devices))
+				for i, d := range devices {
+					out[i] = deviceView{d.ID, d.Name, d.Principal, d.LastSeen, d.Revoked}
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+			w := cmd.OutOrStdout()
+			for _, d := range devices {
+				id := d.ID
+				if len(id) > 12 {
+					id = id[:12]
+				}
+				rev := ""
+				if d.Revoked {
+					rev = " [revoked]"
+				}
+				lastSeen := "never"
+				if d.LastSeen > 0 {
+					lastSeen = time.Unix(d.LastSeen, 0).UTC().Format(time.RFC3339)
+				}
+				fmt.Fprintf(w, "%-12s %-20s %-20s %s%s\n", id, d.Name, d.Principal, lastSeen, rev)
+			}
+			return nil
+		},
+	}
+	ls.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	ls.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	cmd.AddCommand(ls)
+	return cmd
 }

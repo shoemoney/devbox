@@ -7,11 +7,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,6 +46,8 @@ type Server struct {
 	publishMu sync.Mutex           // serializes publish so the case-clash check + create is atomic
 	version   string               // build version, surfaced at /healthz (set via SetVersion)
 
+	metricsToken string // optional; "" = open (default, matches existing behaviour)
+
 	// Prometheus counters (monotonic). bytesIn/Out are the WAN signal now the hub
 	// is internet-reachable; pushes/conflicts show sync churn. Exposed at /metrics.
 	bytesIn   atomic.Int64
@@ -59,6 +63,10 @@ func NewServer(db *meta.DB, store blobstore.Store) *Server {
 
 // SetVersion records the build version for the /healthz response.
 func (s *Server) SetVersion(v string) *Server { s.version = v; return s }
+
+// SetMetricsToken requires the given token to access /metrics. Empty = open (default).
+// Mirror of the dashboard token pattern: accepts Authorization: Bearer or ?token=.
+func (s *Server) SetMetricsToken(tok string) *Server { s.metricsToken = tok; return s }
 
 // WithDashboard attaches a live dashboard so the hub emits flow events to it.
 func (s *Server) WithDashboard(d *dashboard.Dashboard) *Server { s.dash = d; return s }
@@ -609,7 +617,20 @@ func (s *Server) handleMembers(w http.ResponseWriter, r *http.Request, _ string)
 	writeJSON(w, http.StatusOK, proto.MembersResponse{Legacy: mode != "explicit", Members: out})
 }
 
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.metricsToken != "" {
+		tok := r.URL.Query().Get("token")
+		if tok == "" {
+			const bp = "Bearer "
+			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, bp) {
+				tok = h[len(bp):]
+			}
+		}
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(s.metricsToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	gauges := []struct {
 		name, table, help string
 	}{
@@ -681,4 +702,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeErr writes a proto.Error JSON body with the given status.
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, proto.Error{Error: msg})
+}
+
+// loggingResponseWriter captures the status code and response bytes for the
+// access log. Defaults to 200 so a handler that never calls WriteHeader is
+// counted correctly.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (lw *loggingResponseWriter) WriteHeader(status int) {
+	lw.status = status
+	lw.ResponseWriter.WriteHeader(status)
+}
+
+func (lw *loggingResponseWriter) Write(b []byte) (int, error) {
+	n, err := lw.ResponseWriter.Write(b)
+	lw.bytes += n
+	return n, err
+}
+
+// AccessLogMiddleware wraps h and logs one line per request via stdlib log:
+// method, path, status, bytes, remote addr, duration. Default off; enabled by
+// the --access-log serve flag.
+func AccessLogMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(lw, r)
+		log.Printf("%s %s %d %d %s %s",
+			r.Method, r.URL.Path, lw.status, lw.bytes, r.RemoteAddr, time.Since(start))
+	})
 }

@@ -527,3 +527,65 @@ func TestHubAuthAndHashErrors(t *testing.T) {
 		t.Fatalf("mismatched blob status = %d, want 400", status)
 	}
 }
+
+// TestMetricsAuth verifies that /metrics returns 401 when a token is set and
+// the request carries no token, and 200 on correct Authorization: Bearer or
+// ?token= presentation.
+func TestMetricsAuth(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatalf("meta.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store, err := blobstore.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDisk: %v", err)
+	}
+	const tok = "secret-metrics-token"
+	srv := httptest.NewServer(NewServer(db, store).SetMetricsToken(tok).Handler())
+	t.Cleanup(srv.Close)
+
+	// No token → 401.
+	if status, _ := do(t, "GET", srv.URL+proto.PathMetrics, "", nil); status != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401", status)
+	}
+
+	// Wrong token via Bearer → 401.
+	if status, _ := do(t, "GET", srv.URL+proto.PathMetrics, "wrong-token", nil); status != http.StatusUnauthorized {
+		t.Fatalf("wrong bearer: status = %d, want 401", status)
+	}
+
+	// Correct token via Authorization: Bearer → 200.
+	if status, _ := do(t, "GET", srv.URL+proto.PathMetrics, tok, nil); status != http.StatusOK {
+		t.Fatalf("correct bearer: status = %d, want 200", status)
+	}
+
+	// Correct token via ?token= query param → 200.
+	if status, _ := do(t, "GET", srv.URL+proto.PathMetrics+"?token="+tok, "", nil); status != http.StatusOK {
+		t.Fatalf("?token: status = %d, want 200", status)
+	}
+}
+
+// TestMetricsOpenWhenNoToken verifies /metrics remains open when no token is configured.
+func TestMetricsOpenWhenNoToken(t *testing.T) {
+	base, _ := testHub(t)
+	if status, _ := do(t, "GET", base+proto.PathMetrics, "", nil); status != http.StatusOK {
+		t.Fatalf("open metrics: status = %d, want 200", status)
+	}
+}
+
+// TestAccessLogMiddleware verifies that the wrapper passes status and body through unchanged.
+func TestAccessLogMiddleware(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte("hello"))
+	})
+	rec := httptest.NewRecorder()
+	AccessLogMiddleware(inner).ServeHTTP(rec, httptest.NewRequest("GET", "/test", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code = %d, want 201", rec.Code)
+	}
+	if got := rec.Body.String(); got != "hello" {
+		t.Fatalf("body = %q, want 'hello'", got)
+	}
+}

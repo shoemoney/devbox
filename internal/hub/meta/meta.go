@@ -255,6 +255,14 @@ func migrate(db *sql.DB, path string, preexisting bool) error {
 // Close closes the database.
 func (d *DB) Close() error { return d.sql.Close() }
 
+// BackupTo writes a consistent snapshot of the live database to dest using
+// VACUUM INTO (SQLite online backup: runs outside a transaction, WAL included).
+// Same quoting pattern as the pre-migration backup in migrate().
+func (d *DB) BackupTo(dest string) error {
+	_, err := d.sql.Exec(`VACUUM INTO '` + strings.ReplaceAll(dest, "'", "''") + `'`)
+	return err
+}
+
 // --- devices -------------------------------------------------------------
 
 // AddDevice registers (or updates) a device by id.
@@ -853,6 +861,27 @@ func (d *DB) Heads() ([]string, error) {
 // SnapshotIDs returns every snapshot id recorded for a share.
 func (d *DB) SnapshotIDs(share string) ([]string, error) {
 	return d.queryStrings(`SELECT id FROM snapshots WHERE share=?`, share)
+}
+
+// SnapshotTimestamps returns id→created_at for all snapshots of a share.
+// Used by GC's --keep-days: snapshots within the window are kept even when
+// outside the --keep newest-N window.
+func (d *DB) SnapshotTimestamps(share string) (map[string]int64, error) {
+	rows, err := d.sql.Query(`SELECT id, created_at FROM snapshots WHERE share=?`, share)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var id string
+		var ts int64
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, err
+		}
+		out[id] = ts
+	}
+	return out, rows.Err()
 }
 
 // --- dashboard reads ------------------------------------------------------
