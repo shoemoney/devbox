@@ -369,6 +369,21 @@ func (c *Client) raw(method, path string, data []byte) error {
 	})
 }
 
+// HubDate fetches the hub's /healthz endpoint (unauthenticated) and returns the
+// Date header so callers can detect clock skew between device and hub.
+func (c *Client) HubDate() (time.Time, error) {
+	resp, err := c.hc.Get(c.base + "/healthz")
+	if err != nil {
+		return time.Time{}, err
+	}
+	resp.Body.Close()
+	dh := resp.Header.Get("Date")
+	if dh == "" {
+		return time.Time{}, fmt.Errorf("devbox: hub /healthz response missing Date header")
+	}
+	return http.ParseTime(dh)
+}
+
 // apiError turns a non-2xx body into an error, preferring proto.Error's message.
 func apiError(code int, body []byte) error {
 	var e proto.Error

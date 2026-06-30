@@ -1028,6 +1028,19 @@ func doctorCmd() *cobra.Command {
 				}
 			}
 
+			// Clock-skew check (diagnostic-only — never a hard failure).
+			if d.Hub != "" {
+				if hubDate, err := transport.New(d.Hub).HubDate(); err == nil {
+					skew := time.Since(hubDate)
+					ok, warn := clockSkewStatus(skew)
+					if ok {
+						check(true, false, "clock skew", skewAbs(skew).Round(time.Millisecond).String()+" vs hub")
+					} else {
+						check(false, warn, "clock skew", "device clock is "+skewAbs(skew).Round(time.Second).String()+" off the hub — fix NTP; join/snapshot ordering may misbehave")
+					}
+				}
+			}
+
 			// bash — required for lifecycle hooks.
 			if _, err := exec.LookPath("bash"); err != nil {
 				check(false, true, "bash", "not found — lifecycle hooks won't run")
@@ -1094,6 +1107,23 @@ func doctorCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON (exit code still non-zero on failure)")
 	return cmd
+}
+
+// clockSkewStatus returns ok=true when skew is within the 30-second tolerance,
+// warn=true (never a hard failure) when it exceeds it.
+func clockSkewStatus(skew time.Duration) (ok, warn bool) {
+	if skewAbs(skew) <= 30*time.Second {
+		return true, false
+	}
+	return false, true
+}
+
+// skewAbs returns the absolute value of a duration.
+func skewAbs(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // writable reports whether dir exists and we can create a file in it.

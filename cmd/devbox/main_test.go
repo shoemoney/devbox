@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shoemoney/devbox/internal/config"
 )
@@ -112,6 +113,25 @@ func TestConflictsJSON(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("no mounts should yield empty list, got %v", got)
+	}
+}
+
+// TestClockSkewStatus covers the 30-second threshold in both directions.
+func TestClockSkewStatus(t *testing.T) {
+	for _, tc := range []struct {
+		skew     time.Duration
+		wantOK   bool
+		wantWarn bool
+	}{
+		{0, true, false},
+		{30 * time.Second, true, false},
+		{31 * time.Second, false, true},
+		{-45 * time.Second, false, true},
+	} {
+		ok, warn := clockSkewStatus(tc.skew)
+		if ok != tc.wantOK || warn != tc.wantWarn {
+			t.Errorf("clockSkewStatus(%v) = (%v,%v), want (%v,%v)", tc.skew, ok, warn, tc.wantOK, tc.wantWarn)
+		}
 	}
 }
 
