@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -674,5 +675,50 @@ func TestAccessLogMiddleware(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "hello" {
 		t.Fatalf("body = %q, want 'hello'", got)
+	}
+}
+
+// TestAccessLogDeviceID verifies that AccessLogMiddleware includes the device id in
+// the log line for authenticated requests, and "-" for anonymous ones like /healthz.
+func TestAccessLogDeviceID(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := blobstore.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	srv := httptest.NewServer(AccessLogMiddleware(NewServer(db, store).Handler()))
+	defer srv.Close()
+
+	// Anonymous request → device field must be "-".
+	buf.Reset()
+	if st, _ := do(t, "GET", srv.URL+"/healthz", "", nil); st != http.StatusOK {
+		t.Fatalf("healthz = %d", st)
+	}
+	if line := buf.String(); !strings.HasSuffix(strings.TrimRight(line, "\n"), " -") {
+		t.Fatalf("anonymous log line missing '-' sentinel: %q", line)
+	}
+
+	// Authenticated request → device id must appear in log line.
+	if err := db.CreateToken(HashToken("logtok"), time.Now().Unix()+3600); err != nil {
+		t.Fatal(err)
+	}
+	join := joinWith(t, srv.URL, "logtok")
+	buf.Reset()
+	// GET /v1/head goes through auth, so the device id is resolved and set.
+	if st, _ := do(t, "GET", srv.URL+proto.PathHead+"?share=x", join.Bearer, nil); st != http.StatusOK {
+		t.Fatalf("head = %d", st)
+	}
+	if !strings.Contains(buf.String(), join.DeviceID) {
+		t.Fatalf("authed log line missing device id %q: %q", join.DeviceID, buf.String())
 	}
 }

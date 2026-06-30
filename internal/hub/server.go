@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"context"
 	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -36,6 +37,11 @@ const (
 	maxBlobBytes = 256 << 20 // one chunk/manifest blob — generous
 	maxJSONBytes = 8 << 20   // any JSON control request
 )
+
+// ctxKey is the unexported key type for per-request context values set by this package.
+type ctxKey int
+
+const deviceKey ctxKey = iota // *string holder; auth writes deviceID; AccessLogMiddleware reads it
 
 // Server is the devbox hub: metadata in db, blob bytes in store, change events
 // fanned out via broker.
@@ -132,8 +138,9 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 }
 
 // auth wraps a handler, requiring a valid "Authorization: Bearer <tok>" that
-// resolves to a non-revoked device. The device id is stashed in the request
-// context for the wrapped handler.
+// resolves to a non-revoked device. When AccessLogMiddleware is in the outer
+// chain it records the resolved device id via the *string holder stored under
+// deviceKey in the request context.
 func (s *Server) auth(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
@@ -150,6 +157,9 @@ func (s *Server) auth(next func(http.ResponseWriter, *http.Request, string)) htt
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "invalid bearer token")
 			return
+		}
+		if holder, ok := r.Context().Value(deviceKey).(*string); ok {
+			*holder = deviceID
 		}
 		next(w, r, deviceID)
 	}
@@ -756,14 +766,20 @@ func (lw *loggingResponseWriter) Write(b []byte) (int, error) {
 }
 
 // AccessLogMiddleware wraps h and logs one line per request via stdlib log:
-// method, path, status, bytes, remote addr, duration. Default off; enabled by
-// the --access-log serve flag.
+// method, path, status, bytes, remote addr, duration, device id ("-" for
+// anonymous). Default off; enabled by the --access-log serve flag.
 func AccessLogMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		dev := new(string)
+		r = r.WithContext(context.WithValue(r.Context(), deviceKey, dev))
 		lw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		h.ServeHTTP(lw, r)
-		log.Printf("%s %s %d %d %s %s",
-			r.Method, r.URL.Path, lw.status, lw.bytes, r.RemoteAddr, time.Since(start))
+		devID := *dev
+		if devID == "" {
+			devID = "-"
+		}
+		log.Printf("%s %s %d %d %s %s %s",
+			r.Method, r.URL.Path, lw.status, lw.bytes, r.RemoteAddr, time.Since(start), devID)
 	})
 }
