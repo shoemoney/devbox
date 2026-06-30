@@ -42,6 +42,10 @@ type Mount struct {
 	// Pinned means this mount is held at a deployed snapshot (devbox deploy) and
 	// the daemon must NOT live-advance it to head. Re-mounting clears it.
 	Pinned bool `toml:"pinned,omitempty"`
+	// Exclude are device-local ignore patterns (gitignore syntax) layered on top
+	// of the share-wide .devignore — for paths this machine shouldn't sync (e.g. a
+	// local build dir) without touching the shared ignore file.
+	Exclude []string `toml:"exclude,omitempty"`
 }
 
 // Daemon is daemon.toml: which hub this device joined (with its bearer token and
@@ -94,11 +98,15 @@ func SaveDaemon(dir string, d Daemon) error {
 // Settings is config.toml: per-machine tunables (separate from daemon.toml).
 type Settings struct {
 	Transfer struct {
-		MaxKbps int `toml:"max_kbps"` // blob transfer cap; 0 = unlimited
+		MaxKbps  int  `toml:"max_kbps"` // blob transfer cap; 0 = unlimited
+		Compress bool `toml:"compress"` // gzip blob uploads (helps over WAN; off by default)
 	} `toml:"transfer"`
 	Secrets struct {
 		ExtraPatterns []string `toml:"extra_patterns"`
 	} `toml:"secrets"`
+	Sync struct {
+		RescanSeconds int `toml:"rescan_seconds"` // periodic rescan cadence; 0 = default (60s)
+	} `toml:"sync"`
 }
 
 // LoadSettings reads config.toml from dir (zero Settings if absent).

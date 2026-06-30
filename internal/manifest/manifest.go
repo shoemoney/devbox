@@ -73,11 +73,12 @@ func Build(root string, ig *ignore.Matcher, guard *secret.Guard) (Manifest, []st
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(p) // ponytail: whole-file read; stream huge files later
+		f, err := os.Open(p)
 		if err != nil {
 			return err
 		}
-		cs, err := chunk.Split(data)
+		cs, err := chunk.SplitReader(f) // streams in bounded memory — no whole-file read
+		f.Close()                       // explicit (not defer): WalkDir calls this closure per file
 		if err != nil {
 			return fmt.Errorf("chunk %s: %w", rel, err)
 		}

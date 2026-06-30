@@ -13,9 +13,10 @@ import (
 
 // fakeDaemon is a minimal Daemon for exercising the control server in isolation.
 type fakeDaemon struct {
-	mu      sync.Mutex
-	paused  bool
-	resumes int
+	mu       sync.Mutex
+	paused   bool
+	resumes  int
+	pauseFor time.Duration
 }
 
 func (f *fakeDaemon) StateSnapshot() State {
@@ -25,6 +26,13 @@ func (f *fakeDaemon) StateSnapshot() State {
 		Paused: f.paused,
 		Mounts: []MountState{{Share: "s", Subpath: "p", Local: "/tmp/x", ReadOnly: true, BaseSnapshot: "snap123"}},
 	}
+}
+
+func (f *fakeDaemon) PauseFor(dur time.Duration) {
+	f.mu.Lock()
+	f.paused = true
+	f.pauseFor = dur
+	f.mu.Unlock()
 }
 
 func (f *fakeDaemon) Pause() {
@@ -106,6 +114,25 @@ func TestRoundTripPauseStateResume(t *testing.T) {
 	}
 	if fd.resumes != 1 {
 		t.Fatalf("Resume should have been invoked once, got %d", fd.resumes)
+	}
+}
+
+// TestPauseForCarriesDuration proves POST /pause?for=<dur> reaches the daemon's
+// PauseFor with the duration intact (the wire path for `devbox pause --for`).
+func TestPauseForCarriesDuration(t *testing.T) {
+	dir, fd := serveTest(t)
+
+	if err := PauseFor(dir, 90*time.Minute); err != nil {
+		t.Fatalf("PauseFor: %v", err)
+	}
+	fd.mu.Lock()
+	got, paused := fd.pauseFor, fd.paused
+	fd.mu.Unlock()
+	if !paused {
+		t.Fatal("PauseFor should have paused the daemon")
+	}
+	if got != 90*time.Minute {
+		t.Fatalf("PauseFor duration = %s, want 90m", got)
 	}
 }
 

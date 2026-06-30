@@ -4,7 +4,28 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+	"testing/iotest"
 )
+
+// TestSplitReaderMatchesSplit proves streaming gives the same chunk boundaries
+// and hashes as the whole-buffer path even when the reader hands back data one
+// byte at a time (fragmented reads must not shift FastCDC's cut points).
+func TestSplitReaderMatchesSplit(t *testing.T) {
+	data := seededBlob(7, 512*1024) // > MaxSize so it really chunks
+	want := mustSplit(t, data)
+	got, err := SplitReader(iotest.OneByteReader(bytes.NewReader(data)))
+	if err != nil {
+		t.Fatalf("SplitReader error: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("chunk count: streamed %d, buffered %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk %d differs: streamed %+v, buffered %+v", i, got[i], want[i])
+		}
+	}
+}
 
 // seededBlob returns a deterministic pseudo-random blob of n bytes.
 func seededBlob(seed int64, n int) []byte {

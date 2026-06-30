@@ -22,13 +22,13 @@ import (
 	"github.com/shoemoney/devbox/pkg/proto"
 )
 
-// rescanInterval is the safety-net cadence for re-syncing a mount even when no
-// trigger fired. It backstops a watcher that never started (e.g. inotify
+// defaultRescanInterval is the safety-net cadence for re-syncing a mount even
+// when no trigger fired. It backstops a watcher that never started (e.g. inotify
 // max_user_watches exhausted on a big Pi tree) or an event that slipped through:
 // without it, such a mount would stop pushing local edits entirely. PRD risk #1.
-// ponytail: fixed 60s; promote to a Settings knob only if a huge tree makes the
-// periodic manifest rebuild measurably costly.
-const rescanInterval = 60 * time.Second
+// Overridable per machine via settings.sync.rescan_seconds (Daemon.rescanInterval)
+// — a huge tree can lengthen it, a latency-sensitive one can shorten it.
+const defaultRescanInterval = 60 * time.Second
 
 // Daemon syncs a device's mounts against their hub.
 type Daemon struct {
@@ -37,14 +37,17 @@ type Daemon struct {
 	host           string
 	guard          *secret.Guard
 	maxBytesPerSec int
+	compress       bool          // gzip blob uploads (settings.transfer.compress)
+	rescanInterval time.Duration // periodic safety-net cadence (settings.sync.rescan_seconds)
 	logf           func(string, ...any)
 
 	paused atomic.Bool // set via control /pause; gates the sync loop
 
-	mu     sync.Mutex
-	state  map[string]string       // mountKey -> last-applied snapshot
-	nudges map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
-	mounts map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
+	mu          sync.Mutex
+	state       map[string]string       // mountKey -> last-applied snapshot
+	nudges      map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
+	mounts      map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
+	resumeTimer *time.Timer             // pending auto-resume from PauseFor; nil if none
 }
 
 // New builds a daemon from a loaded config. logf may be nil (defaults to log.Printf).
@@ -64,9 +67,15 @@ func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) 
 	if logf == nil {
 		logf = log.Printf
 	}
+	rescan := defaultRescanInterval
+	if settings.Sync.RescanSeconds > 0 {
+		rescan = time.Duration(settings.Sync.RescanSeconds) * time.Second
+	}
 	return &Daemon{
 		dir: dir, cfg: cfg, host: host, guard: guard,
 		maxBytesPerSec: settings.Transfer.MaxKbps * 1024,
+		compress:       settings.Transfer.Compress,
+		rescanInterval: rescan,
 		logf:           logf, state: state,
 		nudges: map[string]func(){},
 		mounts: map[string]config.Mount{},
@@ -141,7 +150,7 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 	// Local filesystem changes -> sync. If the watcher can't start (e.g. inotify
 	// limit), we don't bail: the periodic rescan below keeps the mount syncing.
 	if w, err := watch.New(m.Local, 300*time.Millisecond); err != nil {
-		d.logf("watch %s: %v — falling back to %s rescans (run: devbox doctor)", m.Local, err, rescanInterval)
+		d.logf("watch %s: %v — falling back to %s rescans (run: devbox doctor)", m.Local, err, d.rescanInterval)
 	} else {
 		defer w.Close()
 		go func() {
@@ -189,9 +198,9 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Duration(rand.Int63n(int64(rescanInterval)))):
+		case <-time.After(time.Duration(rand.Int63n(int64(d.rescanInterval)))):
 		}
-		t := time.NewTicker(rescanInterval)
+		t := time.NewTicker(d.rescanInterval)
 		defer t.Stop()
 		for {
 			select {
@@ -243,7 +252,32 @@ func (d *Daemon) unregister(m config.Mount) {
 // are drained without effect while paused.
 func (d *Daemon) Pause() {
 	d.paused.Store(true)
+	d.clearResumeTimer() // an explicit pause overrides any pending auto-resume
 	d.logf("⏸️  paused — syncing suspended (devbox resume to continue)")
+}
+
+// PauseFor pauses syncing and auto-resumes after dur (devbox pause --for). A new
+// pause replaces any pending auto-resume; an explicit Resume cancels it. A
+// non-positive dur is an indefinite pause, identical to Pause.
+func (d *Daemon) PauseFor(dur time.Duration) {
+	d.Pause() // clears any prior timer (fully unlocks before we re-lock below)
+	if dur <= 0 {
+		return
+	}
+	d.mu.Lock()
+	d.resumeTimer = time.AfterFunc(dur, d.Resume)
+	d.mu.Unlock()
+	d.logf("⏱️  auto-resume scheduled in %s", dur)
+}
+
+// clearResumeTimer stops and drops any pending PauseFor auto-resume.
+func (d *Daemon) clearResumeTimer() {
+	d.mu.Lock()
+	if d.resumeTimer != nil {
+		d.resumeTimer.Stop()
+		d.resumeTimer = nil
+	}
+	d.mu.Unlock()
 }
 
 // Resume clears the pause and nudges every registered mount into an immediate
@@ -251,6 +285,10 @@ func (d *Daemon) Pause() {
 func (d *Daemon) Resume() {
 	d.paused.Store(false)
 	d.mu.Lock()
+	if d.resumeTimer != nil { // cancel any pending auto-resume from PauseFor
+		d.resumeTimer.Stop()
+		d.resumeTimer = nil
+	}
 	nudges := make([]func(), 0, len(d.nudges))
 	for _, n := range d.nudges {
 		nudges = append(nudges, n)
@@ -282,7 +320,7 @@ func (d *Daemon) StateSnapshot() control.State {
 }
 
 func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
-	ig, err := syncer.LoadIgnore(m.Local)
+	ig, err := syncer.LoadIgnoreWith(m.Local, m.Exclude)
 	if err != nil {
 		d.logf("ignore %s: %v", m.Local, err)
 		return

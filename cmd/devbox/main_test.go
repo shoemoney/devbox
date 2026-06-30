@@ -1,11 +1,57 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// TestStatusJSON proves `status --json` emits valid JSON and reports not-joined
+// on a fresh config dir (the scriptable path for fleet monitoring).
+func TestStatusJSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty → unjoined device
+
+	var buf bytes.Buffer
+	cmd := statusCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --json: %v", err)
+	}
+	var got statusJSON
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("status --json emitted invalid JSON: %v\n%s", err, buf.String())
+	}
+	if got.Joined {
+		t.Fatalf("fresh config dir should report joined=false, got %+v", got)
+	}
+}
+
+// TestConflictsJSON proves `conflicts --json` emits a JSON array (never null).
+func TestConflictsJSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var buf bytes.Buffer
+	cmd := conflictsCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("conflicts --json: %v", err)
+	}
+	var got []struct {
+		Share string `json:"share"`
+		Path  string `json:"path"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("conflicts --json emitted invalid JSON: %v\n%s", err, buf.String())
+	}
+	if len(got) != 0 {
+		t.Fatalf("no mounts should yield empty list, got %v", got)
+	}
+}
 
 // TestWritePidArbitration covers the O_EXCL claim, the live-daemon refusal, and
 // stale-pidfile recovery.

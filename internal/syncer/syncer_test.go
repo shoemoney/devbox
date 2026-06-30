@@ -17,6 +17,28 @@ import (
 	"github.com/shoemoney/devbox/internal/transport"
 )
 
+// TestLoadIgnoreWithLayersExtra proves device-local excludes layer on top of the
+// shared .devignore without dropping its rules.
+func TestLoadIgnoreWithLayersExtra(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".devignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ig, err := LoadIgnoreWith(root, []string{"build/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ig.Match("app.log", false) {
+		t.Error("shared .devignore pattern (*.log) was lost")
+	}
+	if !ig.Match("build", true) {
+		t.Error("device-local exclude (build/) was not applied")
+	}
+	if ig.Match("main.go", false) {
+		t.Error("unrelated path wrongly ignored")
+	}
+}
+
 // joinDevice enrolls a fresh device against srv with a freshly-minted token.
 func joinDevice(t *testing.T, db *meta.DB, baseURL, name string) *transport.Client {
 	t.Helper()

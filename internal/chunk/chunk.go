@@ -46,17 +46,29 @@ type Chunk struct {
 // matters once Split streams from an io.Reader, where a mid-input error would
 // otherwise produce a short, valid-looking chunk list with the wrong hash.
 //
-// ponytail: Split is in-memory — it takes the whole []byte and the underlying
-// chunker reads from a bytes.Reader over it. Streaming large inputs from an
-// io.Reader without buffering the entire payload is the upgrade path.
+// Split divides an in-memory buffer. It is a convenience wrapper over
+// SplitReader for callers that already hold the whole []byte.
 func Split(data []byte) ([]Chunk, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
+	return SplitReader(bytes.NewReader(data))
+}
+
+// SplitReader chunks an arbitrarily large input in bounded memory: FastCDC reads
+// from r in windows of at most MaxSize, so a multi-GB file never has to be held
+// whole in RAM (the OOM ceiling the old whole-[]byte path had). Same chunk
+// boundaries and hashes as Split for identical content.
+//
+// ponytail: holds the process-wide splitMu (see above) for the whole read, so a
+// slow reader serializes chunking longer than the in-memory path did. Acceptable
+// while chunking is already globally serialized; the upgrade path is a per-chunker
+// FastCDC table (then this lock disappears entirely).
+func SplitReader(r io.Reader) ([]Chunk, error) {
 	splitMu.Lock()
 	defer splitMu.Unlock()
 
-	chunker, err := fastcdc.NewChunker(bytes.NewReader(data), fastcdc.Options{
+	chunker, err := fastcdc.NewChunker(r, fastcdc.Options{
 		MinSize:     MinSize,
 		AverageSize: AvgSize,
 		MaxSize:     MaxSize,

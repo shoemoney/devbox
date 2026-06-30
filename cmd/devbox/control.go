@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,13 +13,21 @@ import (
 )
 
 func pauseCmd() *cobra.Command {
-	return &cobra.Command{
+	var forDur time.Duration
+	cmd := &cobra.Command{
 		Use:   "pause",
 		Short: "⏸️  pause syncing on the running daemon",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir, err := config.Dir()
 			if err != nil {
 				return err
+			}
+			if forDur > 0 {
+				if err := control.PauseFor(dir, forDur); err != nil {
+					return daemonHint(err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "⏸️  paused — auto-resumes in %s (or run: devbox resume)\n", forDur)
+				return nil
 			}
 			if err := control.Pause(dir); err != nil {
 				return daemonHint(err)
@@ -27,6 +36,8 @@ func pauseCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().DurationVar(&forDur, "for", 0, "auto-resume after this duration (e.g. 2h, 30m); 0 = until 'devbox resume'")
+	return cmd
 }
 
 func resumeCmd() *cobra.Command {

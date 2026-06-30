@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"time"
 )
@@ -46,9 +47,10 @@ type MountState struct {
 // files) so the real server and the Windows stub share one definition and can't
 // drift. The server depends on this behaviour, not the daemon package — no cycle.
 type Daemon interface {
-	StateSnapshot() State // live per-mount + paused view for GET /state
-	Pause()               // stop syncing until resumed
-	Resume()              // clear pause + catch up all mounts
+	StateSnapshot() State       // live per-mount + paused view for GET /state
+	Pause()                     // stop syncing until resumed
+	PauseFor(dur time.Duration) // pause, then auto-resume after dur
+	Resume()                    // clear pause + catch up all mounts
 }
 
 // ErrNotRunning is returned by the client helpers when the control socket is
@@ -98,6 +100,11 @@ func DialState(dir string) (State, error) {
 
 // Pause asks the daemon to stop syncing until resumed.
 func Pause(dir string) error { return post(dir, "/pause") }
+
+// PauseFor asks the daemon to pause and auto-resume after dur.
+func PauseFor(dir string, dur time.Duration) error {
+	return post(dir, "/pause?for="+url.QueryEscape(dur.String()))
+}
 
 // Resume clears the pause and triggers an immediate catch-up on all mounts.
 func Resume(dir string) error { return post(dir, "/resume") }

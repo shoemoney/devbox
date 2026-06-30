@@ -82,7 +82,17 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(s.d.StateSnapshot())
 }
 
-func (s *Server) handlePause(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	if v := r.URL.Query().Get("for"); v != "" {
+		dur, err := time.ParseDuration(v)
+		if err != nil || dur <= 0 {
+			http.Error(w, "bad for= duration", http.StatusBadRequest)
+			return
+		}
+		s.d.PauseFor(dur)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	s.d.Pause()
 	w.WriteHeader(http.StatusOK)
 }

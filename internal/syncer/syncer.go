@@ -163,12 +163,21 @@ func splice(c *transport.Client, localM manifest.Manifest, subpath, parent strin
 
 // LoadIgnore compiles root/.devignore (an empty matcher if the file is absent).
 func LoadIgnore(root string) (*ignore.Matcher, error) {
+	return LoadIgnoreWith(root, nil)
+}
+
+// LoadIgnoreWith compiles root/.devignore plus extra device-local patterns
+// (gitignore syntax) appended after it — so a per-mount --exclude layers on top
+// of the shared ignore file with last-match-wins precedence.
+func LoadIgnoreWith(root string, extra []string) (*ignore.Matcher, error) {
+	var lines []string
 	b, err := os.ReadFile(filepath.Join(root, ".devignore"))
-	if os.IsNotExist(err) {
-		return ignore.Compile(nil)
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	return ignore.Compile(strings.Split(string(b), "\n"))
+	if err == nil {
+		lines = strings.Split(string(b), "\n")
+	}
+	lines = append(lines, extra...)
+	return ignore.Compile(lines)
 }

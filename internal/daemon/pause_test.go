@@ -28,6 +28,36 @@ func absent(path string, d time.Duration) bool {
 	return true
 }
 
+// TestPauseForAutoResumes proves PauseFor pauses immediately and clears the
+// pause on its own after the duration, and that a plain Pause cancels a pending
+// auto-resume (an explicit indefinite pause must override a scheduled resume).
+func TestPauseForAutoResumes(t *testing.T) {
+	d, err := New(t.TempDir(), config.Daemon{}, "h", t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.PauseFor(40 * time.Millisecond)
+	if !d.StateSnapshot().Paused {
+		t.Fatal("PauseFor should pause immediately")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && d.StateSnapshot().Paused {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if d.StateSnapshot().Paused {
+		t.Fatal("PauseFor did not auto-resume after its duration")
+	}
+
+	// A plain Pause after scheduling an auto-resume must stay paused indefinitely.
+	d.PauseFor(40 * time.Millisecond)
+	d.Pause() // cancels the pending 40ms auto-resume
+	time.Sleep(200 * time.Millisecond)
+	if !d.StateSnapshot().Paused {
+		t.Fatal("plain Pause did not cancel the pending auto-resume")
+	}
+}
+
 // TestPauseGatesSyncing is the load-bearing pause test: while paused, a local
 // edit must NOT reach the peer; after resume it must. If Pause() were wired but
 // runMount still synced through the trigger, the "absent while paused" assertion

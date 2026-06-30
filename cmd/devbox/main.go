@@ -4,7 +4,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -189,6 +191,7 @@ func publishCmd() *cobra.Command {
 
 func mountCmd() *cobra.Command {
 	var ro bool
+	var exclude []string
 	cmd := &cobra.Command{
 		Use:   "mount <share[/subpath]> <localdir>",
 		Short: "🔗 mount a hub share (or sub-path) into a local directory (clone + sync)",
@@ -213,14 +216,14 @@ func mountCmd() *cobra.Command {
 			if err := os.MkdirAll(local, 0o755); err != nil {
 				return err
 			}
-			d.Mounts = upsertMount(d.Mounts, config.Mount{Share: share, Subpath: subpath, Local: local, Hub: d.Hub, ReadOnly: ro})
+			d.Mounts = upsertMount(d.Mounts, config.Mount{Share: share, Subpath: subpath, Local: local, Hub: d.Hub, ReadOnly: ro, Exclude: exclude})
 			if err := config.SaveDaemon(dir, d); err != nil {
 				return err
 			}
 
 			c := transport.New(d.Hub)
 			c.SetBearer(d.Bearer)
-			ig, err := syncer.LoadIgnore(local)
+			ig, err := syncer.LoadIgnoreWith(local, exclude)
 			if err != nil {
 				return err
 			}
@@ -263,6 +266,7 @@ func mountCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&ro, "ro", false, "mount read-only (pull only, never push)")
+	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "device-local ignore pattern (gitignore syntax; repeatable) layered on .devignore")
 	return cmd
 }
 
@@ -285,8 +289,16 @@ func upsertMount(mounts []config.Mount, m config.Mount) []config.Mount {
 	return append(mounts, m)
 }
 
+// writeJSON encodes v as indented JSON to w — the shared backend for --json flags.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
 func logCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "log <share>",
 		Short: "🕓 show a share's snapshot history",
 		Args:  cobra.ExactArgs(1),
@@ -310,6 +322,9 @@ func logCmd() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(out, snaps)
+			}
 			for _, s := range snaps {
 				ts := time.Unix(s.CreatedAt, 0).Format("2006-01-02 15:04:05")
 				fmt.Fprintf(out, "%s  %s  %s\n", s.ID, ts, s.Device) // full id so it round-trips to restore
@@ -317,6 +332,8 @@ func logCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
+	return cmd
 }
 
 func inviteCmd() *cobra.Command {
@@ -446,7 +463,7 @@ func restoreCmd() *cobra.Command {
 
 			c := transport.New(d.Hub)
 			c.SetBearer(d.Bearer)
-			ig, err := syncer.LoadIgnore(m.Local)
+			ig, err := syncer.LoadIgnoreWith(m.Local, m.Exclude)
 			if err != nil {
 				return err
 			}
@@ -547,7 +564,8 @@ func ignoreCmd() *cobra.Command {
 }
 
 func conflictsCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "conflicts",
 		Short: "💥 list conflict copies across all mounts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -560,7 +578,11 @@ func conflictsCmd() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			n := 0
+			type conflict struct {
+				Share string `json:"share"`
+				Path  string `json:"path"`
+			}
+			found := []conflict{}
 			for _, m := range d.Mounts {
 				_ = filepath.WalkDir(m.Local, func(p string, e fs.DirEntry, err error) error {
 					if err != nil || e.IsDir() {
@@ -568,20 +590,27 @@ func conflictsCmd() *cobra.Command {
 					}
 					if strings.Contains(e.Name(), ".conflict-") {
 						rel, _ := filepath.Rel(m.Local, p)
-						fmt.Fprintf(out, "  💥 %s/%s\n", m.Share, filepath.ToSlash(rel))
-						n++
+						found = append(found, conflict{Share: m.Share, Path: filepath.ToSlash(rel)})
 					}
 					return nil
 				})
 			}
-			if n == 0 {
+			if asJSON {
+				return writeJSON(out, found)
+			}
+			for _, cf := range found {
+				fmt.Fprintf(out, "  💥 %s/%s\n", cf.Share, cf.Path)
+			}
+			if len(found) == 0 {
 				fmt.Fprintln(out, "✅ no conflict copies")
 			} else {
-				fmt.Fprintf(out, "%d conflict copy(ies) — review, then delete the loser(s)\n", n)
+				fmt.Fprintf(out, "%d conflict copy(ies) — review, then delete the loser(s)\n", len(found))
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
+	return cmd
 }
 
 // findMount returns the first configured mount for share.
@@ -623,7 +652,7 @@ func deployCmd() *cobra.Command {
 
 			c := transport.New(d.Hub)
 			c.SetBearer(d.Bearer)
-			ig, err := syncer.LoadIgnore(m.Local)
+			ig, err := syncer.LoadIgnoreWith(m.Local, m.Exclude)
 			if err != nil {
 				return err
 			}
@@ -715,8 +744,27 @@ func startCmd() *cobra.Command {
 	}
 }
 
+type statusMount struct {
+	Share        string `json:"share"`
+	Subpath      string `json:"subpath,omitempty"`
+	Local        string `json:"local"`
+	ReadOnly     bool   `json:"readonly"`
+	Pinned       bool   `json:"pinned"`
+	BaseSnapshot string `json:"base_snapshot,omitempty"`
+}
+
+type statusJSON struct {
+	Joined bool          `json:"joined"`
+	Device string        `json:"device,omitempty"`
+	Hub    string        `json:"hub,omitempty"`
+	Live   bool          `json:"live"`
+	Paused bool          `json:"paused"`
+	Mounts []statusMount `json:"mounts"`
+}
+
 func statusCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "📊 show device + sync status",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -727,12 +775,36 @@ func statusCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			id, err := identity.Load(dir)
 			if err != nil {
+				if asJSON {
+					return writeJSON(out, statusJSON{Joined: false})
+				}
 				fmt.Fprintln(out, "not joined yet — run: devbox join <hub> <token>")
 				return nil
 			}
 			d, err := config.LoadDaemon(dir)
 			if err != nil {
 				return fmt.Errorf("reading config: %w", err)
+			}
+
+			if asJSON {
+				s := statusJSON{Joined: true, Device: id.Fingerprint(), Hub: d.Hub, Mounts: []statusMount{}}
+				if live, err := control.DialState(dir); err == nil {
+					s.Live, s.Paused = true, live.Paused
+					for _, m := range live.Mounts {
+						s.Mounts = append(s.Mounts, statusMount{
+							Share: m.Share, Subpath: m.Subpath, Local: m.Local,
+							ReadOnly: m.ReadOnly, Pinned: m.Pinned, BaseSnapshot: m.BaseSnapshot,
+						})
+					}
+				} else {
+					for _, m := range d.Mounts {
+						s.Mounts = append(s.Mounts, statusMount{
+							Share: m.Share, Subpath: m.Subpath, Local: m.Local,
+							ReadOnly: m.ReadOnly, Pinned: m.Pinned,
+						})
+					}
+				}
+				return writeJSON(out, s)
 			}
 
 			// Prefer the LIVE daemon when it's running AND stdout is a terminal:
@@ -780,6 +852,8 @@ func statusCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON (prefers live daemon state)")
+	return cmd
 }
 
 func orNone(s string) string {
