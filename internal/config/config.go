@@ -105,7 +105,8 @@ type Settings struct {
 		ExtraPatterns []string `toml:"extra_patterns"`
 	} `toml:"secrets"`
 	Sync struct {
-		RescanSeconds int `toml:"rescan_seconds"` // periodic rescan cadence; 0 = default (60s)
+		RescanSeconds  int  `toml:"rescan_seconds"`  // periodic rescan cadence; 0 = default (60s)
+		IgnoreDefaults bool `toml:"ignore_defaults"` // also ignore common regenerable junk (node_modules, .git, …)
 	} `toml:"sync"`
 }
 

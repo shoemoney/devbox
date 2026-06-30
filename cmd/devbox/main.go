@@ -25,6 +25,7 @@ import (
 	"github.com/shoemoney/devbox/internal/daemon"
 	"github.com/shoemoney/devbox/internal/hooks"
 	"github.com/shoemoney/devbox/internal/identity"
+	"github.com/shoemoney/devbox/internal/ignore"
 	"github.com/shoemoney/devbox/internal/secret"
 	"github.com/shoemoney/devbox/internal/syncer"
 	"github.com/shoemoney/devbox/internal/transport"
@@ -154,13 +155,17 @@ func publishCmd() *cobra.Command {
 
 			c := transport.New(d.Hub)
 			c.SetBearer(d.Bearer)
+			var extraIgnore []string
 			if s, err := config.LoadSettings(dir); err == nil {
 				c.SetCompress(s.Transfer.Compress) // big initial upload — honor compress over WAN
+				if s.Sync.IgnoreDefaults {
+					extraIgnore = ignore.Defaults // don't upload node_modules/.git/… on publish
+				}
 			}
 			if err := c.Publish(share); err != nil {
 				return err
 			}
-			ig, err := syncer.LoadIgnore(root)
+			ig, err := syncer.LoadIgnoreWith(root, extraIgnore)
 			if err != nil {
 				return err
 			}
@@ -567,7 +572,7 @@ func ignoreCmd() *cobra.Command {
 }
 
 func conflictsCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, rm bool
 	cmd := &cobra.Command{
 		Use:   "conflicts",
 		Short: "💥 list conflict copies across all mounts",
@@ -584,6 +589,7 @@ func conflictsCmd() *cobra.Command {
 			type conflict struct {
 				Share string `json:"share"`
 				Path  string `json:"path"`
+				abs   string // absolute path on disk (for --rm); not serialized
 			}
 			found := []conflict{}
 			for _, m := range d.Mounts {
@@ -593,10 +599,23 @@ func conflictsCmd() *cobra.Command {
 					}
 					if strings.Contains(e.Name(), ".conflict-") {
 						rel, _ := filepath.Rel(m.Local, p)
-						found = append(found, conflict{Share: m.Share, Path: filepath.ToSlash(rel)})
+						found = append(found, conflict{Share: m.Share, Path: filepath.ToSlash(rel), abs: p})
 					}
 					return nil
 				})
+			}
+			if rm {
+				removed := 0
+				for _, cf := range found {
+					if err := os.Remove(cf.abs); err != nil {
+						fmt.Fprintf(out, "  ⚠️  could not remove %s/%s: %v\n", cf.Share, cf.Path, err)
+						continue
+					}
+					fmt.Fprintf(out, "  🗑️  removed %s/%s\n", cf.Share, cf.Path)
+					removed++
+				}
+				fmt.Fprintf(out, "removed %d conflict copy(ies)\n", removed)
+				return nil
 			}
 			if asJSON {
 				return writeJSON(out, found)
@@ -607,12 +626,13 @@ func conflictsCmd() *cobra.Command {
 			if len(found) == 0 {
 				fmt.Fprintln(out, "✅ no conflict copies")
 			} else {
-				fmt.Fprintf(out, "%d conflict copy(ies) — review, then delete the loser(s)\n", len(found))
+				fmt.Fprintf(out, "%d conflict copy(ies) — review, then delete the loser(s) (or `devbox conflicts --rm`)\n", len(found))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
+	cmd.Flags().BoolVar(&rm, "rm", false, "delete every conflict copy (review first!)")
 	return cmd
 }
 
@@ -754,6 +774,7 @@ type statusMount struct {
 	ReadOnly     bool   `json:"readonly"`
 	Pinned       bool   `json:"pinned"`
 	BaseSnapshot string `json:"base_snapshot,omitempty"`
+	LastSyncUnix int64  `json:"last_sync_unix,omitempty"`
 }
 
 type statusJSON struct {
@@ -797,6 +818,7 @@ func statusCmd() *cobra.Command {
 						s.Mounts = append(s.Mounts, statusMount{
 							Share: m.Share, Subpath: m.Subpath, Local: m.Local,
 							ReadOnly: m.ReadOnly, Pinned: m.Pinned, BaseSnapshot: m.BaseSnapshot,
+							LastSyncUnix: m.LastSyncUnix,
 						})
 					}
 				} else {
@@ -832,8 +854,8 @@ func statusCmd() *cobra.Command {
 						if m.Pinned {
 							mode += ",pinned"
 						}
-						fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s\n",
-							m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)))
+						fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s  (%s)\n",
+							m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)), syncAge(m.LastSyncUnix))
 					}
 					return nil
 				}
@@ -857,6 +879,22 @@ func statusCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON (prefers live daemon state)")
 	return cmd
+}
+
+// syncAge renders how long ago a mount last synced (for live status).
+func syncAge(unix int64) string {
+	if unix == 0 {
+		return "not synced yet"
+	}
+	d := time.Since(time.Unix(unix, 0)).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("synced %ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("synced %dm ago", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("synced %dh ago", int(d.Hours()))
+	}
 }
 
 func orNone(s string) string {
@@ -907,7 +945,8 @@ func stopCmd() *cobra.Command {
 }
 
 func doctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "🩺 diagnose this device's devbox setup (config, hub, mounts, watcher)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -916,16 +955,25 @@ func doctorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			type doctorCheck struct {
+				Name   string `json:"name"`
+				Status string `json:"status"` // ok | warn | fail
+				Detail string `json:"detail,omitempty"`
+			}
+			var checks []doctorCheck
 			var failed bool
 			check := func(ok bool, warn bool, name, detail string) {
-				glyph := "✅"
+				glyph, status := "✅", "ok"
 				if !ok {
 					if warn {
-						glyph = "⚠️ "
+						glyph, status = "⚠️ ", "warn"
 					} else {
-						glyph = "❌"
-						failed = true
+						glyph, status, failed = "❌", "fail", true
 					}
+				}
+				checks = append(checks, doctorCheck{Name: name, Status: status, Detail: detail})
+				if asJSON {
+					return
 				}
 				if detail != "" {
 					fmt.Fprintf(out, "%s %s — %s\n", glyph, name, detail)
@@ -933,21 +981,30 @@ func doctorCmd() *cobra.Command {
 					fmt.Fprintf(out, "%s %s\n", glyph, name)
 				}
 			}
+			// finish emits the JSON report (when --json) and preserves the exit code.
+			finish := func(retErr error) error {
+				if asJSON {
+					_ = writeJSON(out, checks)
+				}
+				return retErr
+			}
 
-			fmt.Fprintf(out, "devbox %s · %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
-			fmt.Fprintf(out, "config: %s\n\n", dir)
+			if !asJSON {
+				fmt.Fprintf(out, "devbox %s · %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
+				fmt.Fprintf(out, "config: %s\n\n", dir)
+			}
 
 			// Identity + join state.
 			if _, err := identity.Load(dir); err != nil {
 				check(false, false, "identity", "not joined — run: devbox join <hub> <token>")
-				return fmt.Errorf("device is not joined")
+				return finish(fmt.Errorf("device is not joined"))
 			}
 			check(true, false, "identity", "device keypair present")
 
 			d, err := config.LoadDaemon(dir)
 			if err != nil {
 				check(false, false, "config", err.Error())
-				return err
+				return finish(err)
 			}
 			check(d.Hub != "", false, "hub configured", d.Hub)
 			check(d.Bearer != "", false, "bearer token", "present")
@@ -1023,14 +1080,20 @@ func doctorCmd() *cobra.Command {
 				}
 			}
 
-			fmt.Fprintln(out)
 			if failed {
-				return fmt.Errorf("doctor found problems (see ❌ above)")
+				if !asJSON {
+					fmt.Fprintln(out)
+				}
+				return finish(fmt.Errorf("doctor found problems (see ❌ above)"))
 			}
-			fmt.Fprintln(out, "🎉 all checks passed")
-			return nil
+			if !asJSON {
+				fmt.Fprintln(out, "\n🎉 all checks passed")
+			}
+			return finish(nil)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON (exit code still non-zero on failure)")
+	return cmd
 }
 
 // writable reports whether dir exists and we can create a file in it.

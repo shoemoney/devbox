@@ -40,6 +40,7 @@ type MountState struct {
 	ReadOnly     bool   `json:"readonly"`
 	Pinned       bool   `json:"pinned"`
 	BaseSnapshot string `json:"base_snapshot"`
+	LastSyncUnix int64  `json:"last_sync_unix"` // 0 = not synced since daemon start
 }
 
 // Daemon is the slice of the running daemon the control server steers. The

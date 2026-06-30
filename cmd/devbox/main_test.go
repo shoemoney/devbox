@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/shoemoney/devbox/internal/config"
 )
 
 // TestStatusJSON proves `status --json` emits valid JSON and reports not-joined
@@ -27,6 +30,65 @@ func TestStatusJSON(t *testing.T) {
 	}
 	if got.Joined {
 		t.Fatalf("fresh config dir should report joined=false, got %+v", got)
+	}
+}
+
+// TestDoctorJSON proves `doctor --json` emits valid JSON and still reports
+// failure (non-zero exit) on an unjoined device.
+func TestDoctorJSON(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // unjoined
+
+	var buf bytes.Buffer
+	cmd := doctorCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{"--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("doctor on an unjoined device must return an error (non-zero exit)")
+	}
+	var checks []struct {
+		Name, Status, Detail string
+	}
+	if jerr := json.Unmarshal(buf.Bytes(), &checks); jerr != nil {
+		t.Fatalf("doctor --json emitted invalid JSON: %v\n%s", jerr, buf.String())
+	}
+	if len(checks) == 0 || checks[0].Status != "fail" {
+		t.Fatalf("expected a failing identity check, got %+v", checks)
+	}
+}
+
+// TestConflictsRm proves `conflicts --rm` deletes only .conflict- copies.
+func TestConflictsRm(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	mountDir := t.TempDir()
+	keep := filepath.Join(mountDir, "keep.txt")
+	conflictFile := filepath.Join(mountDir, "doc.conflict-host-123.txt")
+	if err := os.WriteFile(keep, []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflictFile, []byte("loser"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveDaemon(filepath.Join(cfg, "devbox"), config.Daemon{
+		Hub: "http://h", Mounts: []config.Mount{{Share: "proj", Local: mountDir, Hub: "http://h"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := conflictsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--rm"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("conflicts --rm: %v", err)
+	}
+	if _, err := os.Stat(conflictFile); !os.IsNotExist(err) {
+		t.Error("conflict copy should have been deleted")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("real file must NOT be deleted")
 	}
 }
 

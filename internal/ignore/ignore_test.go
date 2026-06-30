@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+// TestDefaultsMatch proves the opt-in default-ignore set matches common junk
+// dirs but leaves real source alone.
+func TestDefaultsMatch(t *testing.T) {
+	m, err := Compile(Defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"node_modules", ".git", "__pycache__", "target", "dist"} {
+		if !m.Match(dir, true) {
+			t.Errorf("Defaults should ignore %q/", dir)
+		}
+	}
+	if m.Match("src", true) || m.Match("main.go", false) {
+		t.Error("Defaults must not ignore real source")
+	}
+}
+
 const devignore = `
 node_modules/
 dist/

@@ -19,6 +19,22 @@ type rule struct {
 	dirOnly bool
 }
 
+// Defaults are common regenerable / VCS directories that almost never belong in
+// a sync share. Opt-in via settings.sync.ignore_defaults (off by default, so
+// existing shares don't silently change what they sync). Gitignore syntax —
+// trailing slash = directory-only — fed through the same --exclude layering.
+var Defaults = []string{
+	".git/",
+	"node_modules/",
+	".venv/",
+	"__pycache__/",
+	"target/", // rust/java build output
+	"dist/",
+	"build/",
+	".next/",
+	".DS_Store",
+}
+
 // Compile parses the lines of a .devignore file into a Matcher (case-sensitive,
 // matching gitignore semantics).
 func Compile(patterns []string) (*Matcher, error) { return compile(patterns, false) }

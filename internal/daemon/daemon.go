@@ -15,6 +15,7 @@ import (
 	"github.com/shoemoney/devbox/internal/config"
 	"github.com/shoemoney/devbox/internal/control"
 	"github.com/shoemoney/devbox/internal/hooks"
+	"github.com/shoemoney/devbox/internal/ignore"
 	"github.com/shoemoney/devbox/internal/secret"
 	"github.com/shoemoney/devbox/internal/syncer"
 	"github.com/shoemoney/devbox/internal/transport"
@@ -38,6 +39,7 @@ type Daemon struct {
 	guard          *secret.Guard
 	maxBytesPerSec int
 	compress       bool          // gzip blob uploads (settings.transfer.compress)
+	ignoreDefaults bool          // also ignore common junk dirs (settings.sync.ignore_defaults)
 	rescanInterval time.Duration // periodic safety-net cadence (settings.sync.rescan_seconds)
 	logf           func(string, ...any)
 
@@ -47,6 +49,7 @@ type Daemon struct {
 	state       map[string]string       // mountKey -> last-applied snapshot
 	nudges      map[string]func()       // mountKey -> trigger a catch-up sync (for Resume)
 	mounts      map[string]config.Mount // mountKey -> mount config (for StateSnapshot)
+	lastSync    map[string]int64        // mountKey -> unix secs of last successful sync (0 = never)
 	resumeTimer *time.Timer             // pending auto-resume from PauseFor; nil if none
 }
 
@@ -75,11 +78,20 @@ func New(dir string, cfg config.Daemon, host string, logf func(string, ...any)) 
 		dir: dir, cfg: cfg, host: host, guard: guard,
 		maxBytesPerSec: settings.Transfer.MaxKbps * 1024,
 		compress:       settings.Transfer.Compress,
+		ignoreDefaults: settings.Sync.IgnoreDefaults,
 		rescanInterval: rescan,
 		logf:           logf, state: state,
-		nudges: map[string]func(){},
-		mounts: map[string]config.Mount{},
+		nudges:   map[string]func(){},
+		mounts:   map[string]config.Mount{},
+		lastSync: map[string]int64{},
 	}, nil
+}
+
+// recordSync stamps a mount's last successful sync time (for StateSnapshot / status).
+func (d *Daemon) recordSync(m config.Mount) {
+	d.mu.Lock()
+	d.lastSync[mountKey(m)] = time.Now().Unix()
+	d.mu.Unlock()
 }
 
 // Run syncs every mount until ctx is cancelled.
@@ -315,13 +327,18 @@ func (d *Daemon) StateSnapshot() control.State {
 			ReadOnly:     m.ReadOnly,
 			Pinned:       m.Pinned,
 			BaseSnapshot: d.state[k],
+			LastSyncUnix: d.lastSync[k],
 		})
 	}
 	return st
 }
 
 func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
-	ig, err := syncer.LoadIgnoreWith(m.Local, m.Exclude)
+	excludes := m.Exclude
+	if d.ignoreDefaults {
+		excludes = append(append([]string{}, m.Exclude...), ignore.Defaults...)
+	}
+	ig, err := syncer.LoadIgnoreWith(m.Local, excludes)
 	if err != nil {
 		d.logf("ignore %s: %v", m.Local, err)
 		return
@@ -337,6 +354,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 			return
 		}
 		d.setBase(m, pr.Base)
+		d.recordSync(m)
 		d.report(m, pr)
 		return
 	}
@@ -347,6 +365,7 @@ func (d *Daemon) syncMount(c *transport.Client, m config.Mount) {
 		return
 	}
 	d.setBase(m, newBase)
+	d.recordSync(m)
 	d.report(m, pr)
 }
 
