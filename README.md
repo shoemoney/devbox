@@ -380,10 +380,11 @@ container automatically. 🪄
 | `devbox log <share>` `[--json]` | 🕰️ Snapshot history (full ids); `--json` for machine-readable output |
 | `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
-| `devbox conflicts` `[--json]` | 💥 List conflict copies across all mounts; `--json` emits a JSON array |
+| `devbox conflicts` `[--json] [--rm]` | 💥 List conflict copies across all mounts; `--json` emits a JSON array, `--rm` deletes them (review first!) |
 | `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
-| `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer (non-zero exit on ❌ — cron-friendly) |
+| `devbox doctor` `[--json]` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer (non-zero exit on ❌ — cron-friendly); `--json` for monitoring |
+| `devbox status` shows sync age | ⏱️ Live status now prints per-mount last-sync age ("synced 12s ago" / "not synced yet") |
 | `devbox pause [--for <dur>]` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket; `--for 2h` auto-resumes (M8) |
 | `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
 | `devbox invite revoke <token>` | 🗑️ Kill a pending invite before it's redeemed (only a caller who could mint it) |
@@ -407,7 +408,8 @@ container automatically. 🪄
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
 | `devbox-hub gc [--dry-run]` | 🧹 Garbage-collect unreferenced chunks; `--dry-run` previews what would be pruned, deletes nothing |
-| `GET /healthz` · `GET /readyz` | 🩺 Liveness / readiness probes (readyz pings the DB → 503 if unreachable) for Docker/LB |
+| `GET /healthz` · `GET /readyz` | 🩺 Liveness (`/healthz` reports the build version) / readiness (`/readyz` pings the DB → 503 if unreachable) for Docker/LB |
+| `GET /metrics` | 📊 Prometheus: gauges (devices/shares/snapshots/chunks) + counters (blob bytes in/out, pushes, conflicts) |
 
 </details>
 
@@ -527,17 +529,20 @@ Default-blocked: `.env` · `.env.*` (except `.env.example`) · `*.pem` · `*.key
 ```toml
 [transfer]
 max_kbps  = 0     # blob transfer cap (KB/s); 0 = unlimited
-compress  = false # 🌐 gzip blob uploads — turn on for devices syncing over a WAN link
+compress  = false # 🌐 gzip blobs BOTH ways (upload + download) — turn on for devices syncing over a WAN link
 
 [sync]
-rescan_seconds = 60 # watcher-fallback rescan cadence; raise on a huge tree, lower for snappier convergence
+rescan_seconds  = 60    # watcher-fallback rescan cadence; raise on a huge tree, lower for snappier convergence
+ignore_defaults = false # 🙈 also ignore common junk (node_modules, .git, target, dist, build, .venv, __pycache__, …)
 
 [secrets]
 extra_patterns = ["*.secret", "vault-*"] # additional secret-guard deny patterns
 ```
 
 > `compress` only gzips a chunk when it actually shrinks (incompressible blobs go raw), and the
-> hub hashes the **decompressed** bytes so dedup + integrity are untouched. 🗜️
+> hub hashes the **decompressed** bytes so dedup + integrity are untouched. 🗜️ The WAN path is also
+> hardened with granular timeouts, automatic retry+backoff on transient blips, and parallel blob
+> transfer — no flags, always on.
 
 </details>
 
