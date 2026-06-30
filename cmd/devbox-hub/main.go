@@ -579,6 +579,29 @@ func runGC(db *meta.DB, store blobstore.Store, keep, keepDays int, dryRun bool) 
 		return snaps, len(del), nil
 	}
 
+	// Pre-enumerate chunk hashes for every distinct prunable id before any blob is
+	// deleted. Content is content-addressed: the same id may appear as a prunable
+	// entry in two different shares (both advanced past it). Reading the manifest
+	// inline — after the first share's iteration has already deleted the blob —
+	// returns ErrNotFound, so the second share's DeleteSnapshot gets nil hashes and
+	// the shared chunks' refcounts are never decremented, causing a permanent leak.
+	// Reading each id exactly once up-front avoids the ordering hazard entirely.
+	// ponytail: single pass over distinct IDs; nil slice on ErrNotFound matches the old tolerated-error path.
+	chunksByID := make(map[string][]string, len(prunable))
+	for _, p := range prunable {
+		if keptSnaps[p.id] {
+			continue
+		}
+		if _, seen := chunksByID[p.id]; seen {
+			continue
+		}
+		hashes, err := manifestChunks(store, p.id)
+		if err != nil && err != blobstore.ErrNotFound {
+			return 0, 0, err
+		}
+		chunksByID[p.id] = hashes // nil on ErrNotFound is fine; DeleteSnapshot handles it
+	}
+
 	// Prune each (share, id): delete that share's row and decrement its chunks. The
 	// same content id in another share keeps its own row and counts. Delete the
 	// shared manifest blob at most once, and only when it's unreachable from any
@@ -589,10 +612,7 @@ func runGC(db *meta.DB, store blobstore.Store, keep, keepDays int, dryRun bool) 
 		if keptSnaps[p.id] {
 			continue // a live/kept snapshot in another share still needs this content
 		}
-		hashes, err := manifestChunks(store, p.id)
-		if err != nil && err != blobstore.ErrNotFound {
-			return 0, 0, err
-		}
+		hashes := chunksByID[p.id]
 		if err := db.DeleteSnapshot(p.share, p.id, hashes); err != nil {
 			return 0, 0, err
 		}
