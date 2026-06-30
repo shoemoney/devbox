@@ -26,6 +26,7 @@ import (
 	"github.com/shoemoney/devbox/internal/hub/dashboard"
 	"github.com/shoemoney/devbox/internal/hub/meta"
 	"github.com/shoemoney/devbox/internal/identity"
+	"github.com/shoemoney/devbox/internal/manifest"
 	"github.com/shoemoney/devbox/pkg/proto"
 )
 
@@ -510,7 +511,11 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		return
 	}
 
-	// The manifest blob and every referenced chunk must already be uploaded.
+	// The manifest blob and every chunk it references must already be uploaded.
+	// Derive the authoritative chunk set from the manifest — not from
+	// req.Chunks — so a buggy or malicious client cannot omit a chunk the
+	// manifest references (dangling snapshot) or inject phantom chunk refs
+	// that inflate refcounts for blobs not actually referenced by the manifest.
 	if missing, err := s.missingBlob(req.ManifestHash); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -518,16 +523,42 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		writeErr(w, http.StatusConflict, "missing manifest blob "+req.ManifestHash)
 		return
 	}
-	chunks := make([]meta.ChunkRef, 0, len(req.Chunks))
+	manifestBytes, err := s.store.Get(req.ManifestHash)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	mf, err := manifest.Unmarshal(manifestBytes)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid manifest: "+err.Error())
+		return
+	}
+	// Size hint from req.Chunks (used for metrics/dashboard only).
+	// Membership is manifest-authoritative; if a hash isn't in req.Chunks the
+	// size lands as 0, which is harmless (size is set once on first INSERT;
+	// GC decisions are made on refcount, not size).
+	// ponytail: size hint, not a trust boundary.
+	reqSizes := make(map[string]int64, len(req.Chunks))
 	for _, c := range req.Chunks {
-		if missing, err := s.missingBlob(c.Hash); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		} else if missing {
-			writeErr(w, http.StatusConflict, "missing chunk blob "+c.Hash)
-			return
+		reqSizes[c.Hash] = c.Size
+	}
+	seen := make(map[string]bool)
+	var chunks []meta.ChunkRef
+	for _, e := range mf.Entries {
+		for _, h := range e.Chunks {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			if missing, err := s.missingBlob(h); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			} else if missing {
+				writeErr(w, http.StatusConflict, "missing chunk blob "+h)
+				return
+			}
+			chunks = append(chunks, meta.ChunkRef{Hash: h, Size: reqSizes[h]})
 		}
-		chunks = append(chunks, meta.ChunkRef{Hash: c.Hash, Size: c.Size})
 	}
 
 	snapshotID := req.ManifestHash

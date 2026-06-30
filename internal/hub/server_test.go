@@ -16,6 +16,7 @@ import (
 	"github.com/shoemoney/devbox/internal/chunk"
 	"github.com/shoemoney/devbox/internal/hub/blobstore"
 	"github.com/shoemoney/devbox/internal/hub/meta"
+	"github.com/shoemoney/devbox/internal/manifest"
 	"github.com/shoemoney/devbox/pkg/proto"
 )
 
@@ -144,10 +145,20 @@ func TestHubHappyPath(t *testing.T) {
 		t.Fatalf("missing after upload = %v, want none", have.Missing)
 	}
 
-	// 3. Upload the manifest blob, then push the snapshot.
-	manifest := []byte("manifest-bytes")
-	manifestHash := chunk.Hash(manifest)
-	if status, body := do(t, "PUT", base+proto.PathBlob+manifestHash, bearer, manifest); status != http.StatusOK {
+	// 3. Upload the manifest blob (must be valid JSON referencing the uploaded chunks),
+	// then push the snapshot.
+	mf := manifest.Manifest{
+		Entries: []manifest.Entry{
+			{Path: "a.txt", Mode: 0644, Size: 100, Chunks: []string{hashA}},
+			{Path: "b.txt", Mode: 0644, Size: 200, Chunks: []string{hashB}},
+		},
+	}
+	mfBytes, err := mf.Marshal()
+	if err != nil {
+		t.Fatalf("manifest marshal: %v", err)
+	}
+	manifestHash := chunk.Hash(mfBytes)
+	if status, body := do(t, "PUT", base+proto.PathBlob+manifestHash, bearer, mfBytes); status != http.StatusOK {
 		t.Fatalf("PUT manifest status = %d, body = %s", status, body)
 	}
 
@@ -571,6 +582,82 @@ func TestMetricsOpenWhenNoToken(t *testing.T) {
 	base, _ := testHub(t)
 	if status, _ := do(t, "GET", base+proto.PathMetrics, "", nil); status != http.StatusOK {
 		t.Fatalf("open metrics: status = %d, want 200", status)
+	}
+}
+
+// TestPushManifestChunkIntegrity verifies that the push path derives the
+// authoritative chunk set from the manifest blob, not from req.Chunks. A push
+// whose manifest references a chunk that was never uploaded (and is omitted from
+// req.Chunks) must be REJECTED and the head must not advance. An honest push
+// (all manifest-referenced chunks present) must still succeed.
+func TestPushManifestChunkIntegrity(t *testing.T) {
+	base, db := testHub(t)
+	now := time.Now().Unix()
+	if err := db.CreateToken(HashToken("itok"), now+3600); err != nil {
+		t.Fatal(err)
+	}
+	bearer := joinWith(t, base, "itok").Bearer
+	if st, b := do(t, "POST", base+proto.PathPublish, bearer, mustJSON(t, proto.PublishRequest{Share: "proj"})); st != http.StatusOK {
+		t.Fatalf("publish: %d %s", st, b)
+	}
+
+	// Upload chunkA only; chunkB is intentionally NOT uploaded.
+	chunkA := bytes.Repeat([]byte("a"), 100)
+	hashA := chunk.Hash(chunkA)
+	chunkB := bytes.Repeat([]byte("b"), 200)
+	hashB := chunk.Hash(chunkB)
+	if st, _ := do(t, "PUT", base+proto.PathBlob+hashA, bearer, chunkA); st != http.StatusOK {
+		t.Fatalf("upload chunkA: %d", st)
+	}
+
+	// Build a manifest that references BOTH hashA and hashB.
+	mf := manifest.Manifest{
+		Entries: []manifest.Entry{
+			{Path: "file.txt", Mode: 0644, Size: 300, Chunks: []string{hashA, hashB}},
+		},
+	}
+	mfBytes, _ := mf.Marshal()
+	mfHash := chunk.Hash(mfBytes)
+	if st, _ := do(t, "PUT", base+proto.PathBlob+mfHash, bearer, mfBytes); st != http.StatusOK {
+		t.Fatalf("upload manifest: %d", st)
+	}
+
+	// Malicious/buggy push: omits hashB from req.Chunks even though the manifest
+	// references it. Hub must reject — no dangling snapshot.
+	st, body := do(t, "POST", base+proto.PathPush, bearer, mustJSON(t, proto.PushRequest{
+		Share:        "proj",
+		ManifestHash: mfHash,
+		Chunks:       []proto.ChunkRef{{Hash: hashA, Size: 100}},
+	}))
+	if st == http.StatusOK {
+		t.Fatalf("push with missing manifest chunk must be rejected, got 200: %s", body)
+	}
+
+	// Head must NOT have advanced.
+	if st2, hb := do(t, "GET", base+proto.PathHead+"?share=proj", bearer, nil); st2 != http.StatusOK {
+		t.Fatalf("head: %d %s", st2, hb)
+	} else {
+		var hr proto.HeadResponse
+		if err := json.Unmarshal(hb, &hr); err != nil {
+			t.Fatal(err)
+		}
+		if hr.Head != "" {
+			t.Fatalf("head advanced to %q after rejected push; want empty", hr.Head)
+		}
+	}
+
+	// Upload chunkB — now all manifest-referenced chunks are present.
+	if st, _ := do(t, "PUT", base+proto.PathBlob+hashB, bearer, chunkB); st != http.StatusOK {
+		t.Fatalf("upload chunkB: %d", st)
+	}
+
+	// Honest push must now succeed.
+	if st3, b3 := do(t, "POST", base+proto.PathPush, bearer, mustJSON(t, proto.PushRequest{
+		Share:        "proj",
+		ManifestHash: mfHash,
+		Chunks:       []proto.ChunkRef{{Hash: hashA, Size: 100}, {Hash: hashB, Size: 200}},
+	})); st3 != http.StatusOK {
+		t.Fatalf("honest push must succeed, got %d: %s", st3, b3)
 	}
 }
 
