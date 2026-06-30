@@ -179,6 +179,10 @@ func serveCmd() *cobra.Command {
 				MaxHeaderBytes:    1 << 20,
 			}
 
+			// On shutdown, drop SSE streams first — otherwise the drain waits the full
+			// timeout, since every connected client daemon holds a long-lived /v1/events stream.
+			httpSrv.RegisterOnShutdown(srv.CloseEventStreams)
+
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 

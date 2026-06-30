@@ -16,9 +16,19 @@ import (
 type broker struct {
 	mu   sync.Mutex
 	subs map[chan proto.Event]string // channel -> share filter ("" = all shares)
+
+	done      chan struct{} // closed once to tell every SSE handler to return
+	closeOnce sync.Once
 }
 
-func newBroker() *broker { return &broker{subs: map[chan proto.Event]string{}} }
+func newBroker() *broker {
+	return &broker{subs: map[chan proto.Event]string{}, done: make(chan struct{})}
+}
+
+// shutdown signals every active SSE handler to return. Without it, graceful
+// shutdown waits the full drain timeout because long-lived /v1/events streams
+// never go idle on their own (every connected client daemon holds one).
+func (b *broker) shutdown() { b.closeOnce.Do(func() { close(b.done) }) }
 
 func (b *broker) sub(share string) chan proto.Event {
 	ch := make(chan proto.Event, 16)
@@ -54,6 +64,11 @@ func (b *broker) publish(ev proto.Event) {
 }
 
 // handleEvents streams change events to a device as Server-Sent Events.
+// CloseEventStreams makes every active /v1/events handler return promptly, so a
+// graceful Shutdown isn't held hostage by long-lived SSE streams (every connected
+// client daemon holds one). Wire it via http.Server.RegisterOnShutdown.
+func (s *Server) CloseEventStreams() { s.broker.shutdown() }
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, _ string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -76,6 +91,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, _ string) 
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.broker.done: // server shutting down — return so the conn goes idle and Shutdown completes fast
 			return
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n") // comment line keeps idle proxies from closing us
