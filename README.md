@@ -381,9 +381,9 @@ container automatically. 🪄
 | `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
 | `devbox conflicts` `[--json] [--rm]` | 💥 List conflict copies across all mounts; `--json` emits a JSON array, `--rm` deletes them (review first!) |
-| `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
+| `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` (rejects a pattern that doesn't compile) |
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
-| `devbox doctor` `[--json]` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer + **clock skew vs hub** (warns >30s); non-zero exit on ❌ — cron-friendly; `--json` for monitoring |
+| `devbox doctor` `[--json]` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer + **clock skew vs hub** (warns >30s) + **free disk** on each mount/config dir (warns <1 GiB); non-zero exit on ❌ — cron-friendly; `--json` for monitoring |
 | `devbox status` shows sync age | ⏱️ Live status now prints per-mount last-sync age ("synced 12s ago" / "not synced yet") |
 | `devbox pause [--for <dur>]` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket; `--for 2h` auto-resumes (M8) |
 | `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
@@ -410,7 +410,7 @@ container automatically. 🪄
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
 | `devbox-hub serve --metrics-token <tok>` | 🔐 Require a token for `/metrics` — close the unauthenticated leak on a WAN-exposed hub |
-| `devbox-hub serve --access-log` | 📝 Log one line per request (method, path, status, bytes, addr) for WAN forensics |
+| `devbox-hub serve --access-log` | 📝 Log one line per request (method, path, status, bytes, addr, **device id**) for WAN forensics |
 | `devbox-hub serve` (startup) | 🛰️ Logs build version + dashboard state; ⚠️ warns if `--listen` is non-loopback (plain HTTP → cleartext bearers without the TLS proxy) |
 | `devbox-hub serve` (SIGTERM) | 🛑 Graceful shutdown — drains in-flight requests via `http.Server.Shutdown` and drops live SSE streams immediately (no 10s wait), so the hardened redeploy swaps cleanly |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
