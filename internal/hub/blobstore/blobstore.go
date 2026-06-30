@@ -137,6 +137,26 @@ func (d *Disk) Get(hash string) ([]byte, error) {
 	return b, err
 }
 
+// Walk calls fn for every blob in the store, passing its hash.
+// fn returning a non-nil error stops the walk.
+// ponytail: re-hashes every blob (full read); fine for periodic DR checks, sample/mtime-skip if it ever gets too slow on a huge store.
+func (d *Disk) Walk(fn func(hash string) error) error {
+	return filepath.WalkDir(d.root, func(path string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if de.IsDir() {
+			return nil
+		}
+		name := filepath.Base(path)
+		// Skip temp files and anything safeKey rejects (path traversal, etc.).
+		if strings.HasPrefix(name, ".") || safeKey(name) != nil {
+			return nil
+		}
+		return fn(name)
+	})
+}
+
 // Delete removes a blob, returning ErrNotFound if it was absent.
 func (d *Disk) Delete(hash string) error {
 	if err := safeKey(hash); err != nil {

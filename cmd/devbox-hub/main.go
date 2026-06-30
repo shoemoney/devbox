@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shoemoney/devbox/internal/chunk"
 	"github.com/shoemoney/devbox/internal/hub"
 	"github.com/shoemoney/devbox/internal/hub/blobstore"
 	"github.com/shoemoney/devbox/internal/hub/dashboard"
@@ -65,6 +66,8 @@ func main() {
 		gcCmd(),
 		backupCmd(),
 		deviceCmd(),
+		fsckCmd(),
+		shareCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -697,6 +700,129 @@ func backupCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	return cmd
+}
+
+// fsckCmd re-hashes every blob on disk to detect at-rest corruption.
+// ponytail: re-hashes every blob (full read); fine for periodic DR checks, sample/mtime-skip if it ever gets too slow on a huge store.
+func fsckCmd() *cobra.Command {
+	var data string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "fsck",
+		Short: "🔍 at-rest blob integrity scan (re-hash every blob)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, err := blobstore.NewDisk(filepath.Join(data, "blobs"))
+			if err != nil {
+				return err
+			}
+			type corruptEntry struct {
+				Hash string `json:"hash"`
+				Got  string `json:"got"`
+			}
+			var corrupt []corruptEntry
+			var scanned int
+			walkErr := store.Walk(func(hash string) error {
+				scanned++
+				b, err := store.Get(hash)
+				if err != nil {
+					if !asJSON {
+						fmt.Fprintf(cmd.OutOrStdout(), "read error %s: %v\n", hash, err)
+					}
+					corrupt = append(corrupt, corruptEntry{hash, "read-error"})
+					return nil
+				}
+				got := chunk.Hash(b)
+				if got != hash {
+					if !asJSON {
+						fmt.Fprintf(cmd.OutOrStdout(), "CORRUPTION %s: got %s\n", hash, got)
+					}
+					corrupt = append(corrupt, corruptEntry{hash, got})
+				}
+				return nil
+			})
+			if walkErr != nil {
+				return walkErr
+			}
+			if asJSON {
+				type result struct {
+					Scanned int            `json:"scanned"`
+					Corrupt []corruptEntry `json:"corrupt"`
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(result{scanned, corrupt}); err != nil {
+					return err
+				}
+			} else if len(corrupt) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "✅ fsck: %d blobs OK\n", scanned)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "❌ fsck: %d/%d blobs CORRUPT\n", len(corrupt), scanned)
+			}
+			if len(corrupt) > 0 {
+				return fmt.Errorf("fsck: %d corrupt blob(s) found", len(corrupt))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	return cmd
+}
+
+func shareCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "share", Short: "🗂️  inspect shares"}
+	var data string
+	var asJSON bool
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "list shares",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			stats, err := db.ShareStats()
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				type shareView struct {
+					Name      string `json:"name"`
+					Head      string `json:"head"`
+					ACLMode   string `json:"acl_mode"`
+					Snapshots int    `json:"snapshots"`
+					Members   int    `json:"members"`
+					UpdatedAt int64  `json:"updated_at"`
+				}
+				out := make([]shareView, len(stats))
+				for i, s := range stats {
+					out[i] = shareView{s.Name, s.Head, s.ACLMode, s.Snapshots, s.Members, s.UpdatedAt}
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+			w := cmd.OutOrStdout()
+			for _, s := range stats {
+				head := s.Head
+				if len(head) > 12 {
+					head = head[:12]
+				}
+				updatedAt := "never"
+				if s.UpdatedAt > 0 {
+					updatedAt = time.Unix(s.UpdatedAt, 0).UTC().Format(time.RFC3339)
+				}
+				fmt.Fprintf(w, "%-30s %-12s %-8s snaps=%-4d members=%-3d %s\n",
+					s.Name, head, s.ACLMode, s.Snapshots, s.Members, updatedAt)
+			}
+			return nil
+		},
+	}
+	ls.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
+	ls.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	cmd.AddCommand(ls)
 	return cmd
 }
 

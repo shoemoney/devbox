@@ -73,6 +73,41 @@ func TestMissingErrors(t *testing.T) {
 	}
 }
 
+func TestWalk(t *testing.T) {
+	d, _ := NewDisk(t.TempDir())
+	_ = d.Put("aabb1122", []byte("blob1"))
+	_ = d.Put("cc331144", []byte("blob2"))
+
+	seen := map[string]bool{}
+	if err := d.Walk(func(hash string) error {
+		seen[hash] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !seen["aabb1122"] || !seen["cc331144"] {
+		t.Fatalf("Walk missed blobs: got %v", seen)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("Walk returned unexpected items: %v", seen)
+	}
+}
+
+func TestWalkSkipsTempFiles(t *testing.T) {
+	root := t.TempDir()
+	d, _ := NewDisk(root)
+	_ = d.Put("ff001122", []byte("real"))
+	// Manually plant a temp-looking file in the same shard.
+	if err := os.WriteFile(filepath.Join(root, "ff", ".tmp-stale"), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	_ = d.Walk(func(h string) error { got = append(got, h); return nil })
+	if len(got) != 1 || got[0] != "ff001122" {
+		t.Fatalf("expected only real blob, got %v", got)
+	}
+}
+
 func TestNoTempLeftBehind(t *testing.T) {
 	root := t.TempDir()
 	d, _ := NewDisk(root)
