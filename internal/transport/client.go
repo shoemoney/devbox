@@ -53,15 +53,18 @@ func New(base string) *Client {
 		// phases that SHOULD be fast instead (connect, TLS, time-to-first-byte) and let
 		// TCP keepalive reap a dead peer. ponytail: a mid-body stall isn't bounded here;
 		// add a stall-timeout reader if a flaky link ever hangs transfers.
-		hc: &http.Client{
-			Transport: &http.Transport{
-				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				DisableCompression:    true, // we negotiate gzip explicitly so the rate limiter sees wire bytes
-				MaxIdleConnsPerHost:   16,   // reuse connections for parallel blob transfers
-			},
-		},
+		hc: func() *http.Client {
+			// Clone preserves Proxy (ProxyFromEnvironment), ForceAttemptHTTP2,
+			// IdleConnTimeout and ExpectContinueTimeout from DefaultTransport, then
+			// we override only the fields we intentionally tune.
+			tr := http.DefaultTransport.(*http.Transport).Clone()
+			tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+			tr.TLSHandshakeTimeout = 10 * time.Second
+			tr.ResponseHeaderTimeout = 30 * time.Second
+			tr.DisableCompression = true  // we negotiate gzip explicitly so the rate limiter sees wire bytes
+			tr.MaxIdleConnsPerHost = 16   // reuse connections for parallel blob transfers
+			return &http.Client{Transport: tr}
+		}(),
 	}
 }
 

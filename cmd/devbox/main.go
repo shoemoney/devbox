@@ -833,38 +833,42 @@ func statusCmd() *cobra.Command {
 				return writeJSON(out, s)
 			}
 
-			// Prefer the LIVE daemon when it's running AND stdout is a terminal:
-			// the socket can show paused state and the applied snapshot, which disk
-			// can't. Piped/non-TTY output must stay byte-identical to v1 (scripts
-			// parse it), so the enrichment is gated behind isTTY — the disk path is
-			// the unchanged v1 output.
-			if isTTY(cmd) {
-				if live, err := control.DialState(dir); err == nil {
-					fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
-					fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
-					paused := ""
-					if live.Paused {
-						paused = " ⏸️  PAUSED"
-					}
-					fmt.Fprintf(out, "mounts:  %d (live)%s\n", len(live.Mounts), paused)
-					for _, m := range live.Mounts {
-						mode := "rw"
-						if m.ReadOnly {
-							mode = "ro"
-						}
-						if m.Pinned {
-							mode += ",pinned"
-						}
-						fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s  (%s)\n",
-							m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)), syncAge(m.LastSyncUnix))
-						if m.LastErr != "" {
-							fmt.Fprintf(out, "      ⚠️  last sync failed: %s\n", m.LastErr)
-						}
-					}
-					return nil
+			// Attempt live daemon state once; used for both TTY enrichment and the
+			// disk-path "daemon not running" warning.
+			live, dialErr := control.DialState(dir)
+
+			// TTY + live: enriched output (paused state, applied snapshot, sync age).
+			// Piped/non-TTY callers skip this block — enrichment gated behind isTTY
+			// so script-parseable fields stay stable.
+			if isTTY(cmd) && dialErr == nil {
+				fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
+				fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
+				paused := ""
+				if live.Paused {
+					paused = " ⏸️  PAUSED"
 				}
+				fmt.Fprintf(out, "mounts:  %d (live)%s\n", len(live.Mounts), paused)
+				for _, m := range live.Mounts {
+					mode := "rw"
+					if m.ReadOnly {
+						mode = "ro"
+					}
+					if m.Pinned {
+						mode += ",pinned"
+					}
+					fmt.Fprintf(out, "  - %s/%s -> %s [%s] @%s  (%s)\n",
+						m.Share, m.Subpath, m.Local, mode, short(orNone(m.BaseSnapshot)), syncAge(m.LastSyncUnix))
+					if m.LastErr != "" {
+						fmt.Fprintf(out, "      ⚠️  last sync failed: %s\n", m.LastErr)
+					}
+				}
+				return nil
 			}
 
+			// Disk path (non-TTY or TTY with daemon not running).
+			if dialErr != nil {
+				fmt.Fprintln(out, "⚠️  daemon not running — showing last-known disk state (run: devbox start)")
+			}
 			fmt.Fprintf(out, "device:  %s\n", id.Fingerprint())
 			fmt.Fprintf(out, "hub:     %s\n", orNone(d.Hub))
 			fmt.Fprintf(out, "mounts:  %d\n", len(d.Mounts))

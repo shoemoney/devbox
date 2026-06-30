@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shoemoney/devbox/internal/config"
+	"github.com/shoemoney/devbox/internal/identity"
 )
 
 // TestStatusJSON proves `status --json` emits valid JSON and reports not-joined
@@ -172,5 +173,37 @@ func TestWritePidArbitration(t *testing.T) {
 	removePid(dir)
 	if _, ok := runningPid(dir); ok {
 		t.Fatal("pidfile still live after removePid")
+	}
+}
+
+// TestStatusDaemonNotRunning proves that `status` (non-JSON) warns the user
+// when the device is joined but the daemon is not running.
+func TestStatusDaemonNotRunning(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	dir := filepath.Join(cfg, "devbox")
+
+	// Create identity so identity.Load succeeds (device is "joined").
+	if _, err := identity.LoadOrCreate(dir); err != nil {
+		t.Fatalf("LoadOrCreate identity: %v", err)
+	}
+	// Write daemon config with a hub and one mount.
+	if err := config.SaveDaemon(dir, config.Daemon{
+		Hub:    "http://hub.local:8080",
+		Bearer: "tok",
+		Mounts: []config.Mount{{Share: "proj", Local: t.TempDir(), Hub: "http://hub.local:8080"}},
+	}); err != nil {
+		t.Fatalf("SaveDaemon: %v", err)
+	}
+
+	// No socket in dir → DialState returns ErrNotRunning → disk path with warning.
+	var buf bytes.Buffer
+	cmd := statusCmd()
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(buf.String(), "daemon not running") {
+		t.Fatalf("expected 'daemon not running' in output; got:\n%s", buf.String())
 	}
 }

@@ -392,6 +392,22 @@ func TestHubDateMissingHeader(t *testing.T) {
 	}
 }
 
+// TestTransportHonorsProxyEnv asserts that Clone()-based transport preserves
+// Proxy (ProxyFromEnvironment) and ForceAttemptHTTP2 from DefaultTransport.
+func TestTransportHonorsProxyEnv(t *testing.T) {
+	c := New("http://x")
+	tr, ok := c.hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("transport must be *http.Transport")
+	}
+	if tr.Proxy == nil {
+		t.Fatal("transport must honor HTTP_PROXY env (Proxy was nil)")
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Fatal("transport must have ForceAttemptHTTP2 (lost from DefaultTransport)")
+	}
+}
+
 func TestErrorSurfaced(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, http.StatusConflict, proto.Error{Error: "share exists"})
