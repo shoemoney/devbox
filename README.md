@@ -412,7 +412,7 @@ container automatically. 🪄
 | `devbox-hub serve --metrics-token <tok>` | 🔐 Require a token for `/metrics` — close the unauthenticated leak on a WAN-exposed hub |
 | `devbox-hub serve --access-log` | 📝 Log one line per request (method, path, status, bytes, addr) for WAN forensics |
 | `devbox-hub serve` (startup) | 🛰️ Logs build version + dashboard state; ⚠️ warns if `--listen` is non-loopback (plain HTTP → cleartext bearers without the TLS proxy) |
-| `devbox-hub serve` (SIGTERM) | 🛑 Graceful shutdown — drains in-flight requests via `http.Server.Shutdown`, so the hardened redeploy swaps cleanly |
+| `devbox-hub serve` (SIGTERM) | 🛑 Graceful shutdown — drains in-flight requests via `http.Server.Shutdown` and drops live SSE streams immediately (no 10s wait), so the hardened redeploy swaps cleanly |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
 | `devbox-hub gc [--dry-run] [--keep <n>] [--keep-days <n>]` | 🧹 GC unreferenced chunks; `--dry-run` previews, `--keep` keeps N newest/share, `--keep-days` also keeps anything from the last N days |
 | `GET /healthz` · `GET /readyz` | 🩺 Liveness (`/healthz` reports the build version) / readiness (`/readyz` pings the DB → 503 if unreachable) for Docker/LB |
