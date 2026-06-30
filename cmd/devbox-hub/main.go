@@ -3,6 +3,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -100,6 +103,7 @@ func serveCmd() *cobra.Command {
 			// Optional live dashboard on its own address (localhost by default so it
 			// never widens the API surface; it's unauthenticated read-only metrics).
 			var d *dashboard.Dashboard
+			var ds *http.Server // hoisted so graceful shutdown can reach it
 			if dash {
 				d = dashboard.New(db, version)
 				if dashToken != "" {
@@ -111,10 +115,10 @@ func serveCmd() *cobra.Command {
 				} else if !isLoopback(dashAddr) {
 					fmt.Fprintf(out, "⚠️  dashboard on %s is UNAUTHENTICATED and not loopback — anyone who can reach it sees hub activity. Pass --dashboard-token, SSH-tunnel instead, or you accept this.\n", dashAddr)
 				}
+				ds = &http.Server{Addr: dashAddr, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 				go func() {
-					ds := &http.Server{Addr: dashAddr, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 					fmt.Fprintf(out, "📊 dashboard live at http://%s\n", dashAddr)
-					if err := ds.ListenAndServe(); err != nil {
+					if err := ds.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						fmt.Fprintf(out, "dashboard server stopped: %v\n", err)
 					}
 				}()
@@ -142,7 +146,14 @@ func serveCmd() *cobra.Command {
 				}()
 			}
 
-			fmt.Fprintf(out, "🛰️  devbox-hub listening on %s (data: %s)\n", listen, data)
+			dashState := "off"
+			if dash {
+				dashState = "on @" + dashAddr
+			}
+			fmt.Fprintf(out, "🛰️  devbox-hub %s listening on %s (data: %s · dashboard: %s)\n", version, listen, data, dashState)
+			if !isLoopback(listen) {
+				fmt.Fprintf(out, "⚠️  API on %s serves PLAIN HTTP — bearer tokens travel in cleartext. Put it behind a TLS proxy or accept the risk.\n", listen)
+			}
 			// Explicit timeouts bound the slowloris surface (bare ListenAndServe
 			// has none). No WriteTimeout on purpose: the /v1/events SSE stream is
 			// long-lived and a WriteTimeout would kill it mid-flight.
@@ -158,7 +169,29 @@ func serveCmd() *cobra.Command {
 				IdleTimeout:       120 * time.Second,
 				MaxHeaderBytes:    1 << 20,
 			}
-			return httpSrv.ListenAndServe()
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			srvErr := make(chan error, 1)
+			go func() {
+				if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					srvErr <- err
+				}
+			}()
+
+			select {
+			case err := <-srvErr:
+				return err
+			case <-ctx.Done():
+				fmt.Fprintf(out, "🛑 shutting down…\n")
+				shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if ds != nil {
+					_ = ds.Shutdown(shutCtx)
+				}
+				return httpSrv.Shutdown(shutCtx)
+			}
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "./devbox-hub-data", "hub data directory")
