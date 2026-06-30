@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/shoemoney/devbox/internal/chunk"
 	"github.com/shoemoney/devbox/pkg/proto"
 )
 
@@ -200,6 +202,83 @@ func TestPutBlobCompress(t *testing.T) {
 	}
 	if !bytes.Equal(gotBody, rnd) {
 		t.Fatal("raw body mismatch for incompressible payload")
+	}
+}
+
+// TestPutBlobRetry proves transient failures (5xx) are retried and a 4xx is not.
+func TestPutBlobRetry(t *testing.T) {
+	var attempts int
+	var always400 bool
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		bad := always400
+		mu.Unlock()
+		switch {
+		case bad:
+			w.WriteHeader(http.StatusBadRequest)
+		case n < 2:
+			w.WriteHeader(http.StatusServiceUnavailable) // fail first attempt
+		default:
+			w.WriteHeader(http.StatusOK) // succeed on retry
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	c.SetBearer("t")
+
+	if err := c.PutBlob("h", []byte("data")); err != nil {
+		t.Fatalf("PutBlob should succeed after one 503 retry: %v", err)
+	}
+	mu.Lock()
+	got := attempts
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("expected 2 attempts (503 then 200), got %d", got)
+	}
+
+	// A 4xx must NOT be retried.
+	mu.Lock()
+	attempts, always400 = 0, true
+	mu.Unlock()
+	if err := c.PutBlob("h", []byte("data")); err == nil {
+		t.Fatal("PutBlob should fail on 400")
+	}
+	mu.Lock()
+	got = attempts
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("4xx must not retry: got %d attempts, want 1", got)
+	}
+}
+
+// TestGetBlobGzipDownload proves the client decodes a gzip-encoded blob response
+// (download-side compression) and the integrity check passes on the decoded bytes.
+func TestGetBlobGzipDownload(t *testing.T) {
+	original := bytes.Repeat([]byte("pull me over the WAN "), 512)
+	hash := chunk.Hash(original)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			t.Errorf("client did not request gzip; Accept-Encoding=%q", r.Header.Get("Accept-Encoding"))
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		gz.Write(original)
+		gz.Close()
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	c.SetBearer("t")
+	c.SetCompress(true)
+
+	got, err := c.GetBlob(hash)
+	if err != nil {
+		t.Fatalf("GetBlob: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("gzip download mismatch: %d bytes, want %d", len(got), len(original))
 	}
 }
 

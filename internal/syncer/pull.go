@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/shoemoney/devbox/internal/hooks"
 	"github.com/shoemoney/devbox/internal/ignore"
@@ -360,14 +361,65 @@ func unionKeys(maps ...map[string]manifest.Entry) map[string]struct{} {
 // error returns fsErr=false (the caller should abort and retry the whole sync);
 // a filesystem error — e.g. the path is currently a directory — returns
 // fsErr=true so the caller can skip just that path instead of wedging the mount.
-func writeEntry(c *transport.Client, root string, e manifest.Entry) (fsErr bool, err error) {
-	var buf []byte
-	for _, h := range e.Chunks {
-		b, gerr := c.GetBlob(h)
-		if gerr != nil {
-			return false, gerr // network
+// downloadConcurrency bounds parallel chunk fetches when reassembling one file.
+const downloadConcurrency = 8
+
+// fetchChunks downloads a file's chunks (up to downloadConcurrency in flight) and
+// concatenates them IN ORDER. Memory is bounded to this one file's content — the
+// same as the old sequential append. ponytail: parallelism is within-file; a
+// many-tiny-files clone is still one file at a time — a cross-file prefetch
+// window is the upgrade path if that ever dominates.
+func fetchChunks(c *transport.Client, hashes []string) ([]byte, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+	if len(hashes) == 1 {
+		return c.GetBlob(hashes[0])
+	}
+	parts := make([][]byte, len(hashes))
+	sem := make(chan struct{}, downloadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for i, h := range hashes {
+		mu.Lock()
+		stop := firstErr != nil
+		mu.Unlock()
+		if stop {
+			break
 		}
-		buf = append(buf, b...)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, h string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			b, err := c.GetBlob(h)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			parts[i] = b
+		}(i, h)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	var buf []byte
+	for _, p := range parts {
+		buf = append(buf, p...)
+	}
+	return buf, nil
+}
+
+func writeEntry(c *transport.Client, root string, e manifest.Entry) (fsErr bool, err error) {
+	buf, gerr := fetchChunks(c, e.Chunks)
+	if gerr != nil {
+		return false, gerr // network
 	}
 	dst, serr := safeJoin(root, e.Path)
 	if serr != nil {

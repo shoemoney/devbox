@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,12 +36,60 @@ type Client struct {
 	compress bool          // gzip blob uploads when it shrinks them (settings.transfer.compress)
 }
 
+// maxBlobBytes mirrors the hub's per-blob cap; used to bound a gzip-decoded
+// download so a malicious/buggy hub can't bomb the client.
+const maxBlobBytes = 256 << 20
+
+// blobRetries is how many times a transient blob transfer is attempted before
+// giving up (the daemon retries the whole sync on its next trigger regardless).
+const blobRetries = 3
+
 // New returns a Client for the hub at base (e.g. "http://host:8080").
 func New(base string) *Client {
 	return &Client{
 		base: strings.TrimRight(base, "/"),
-		hc:   &http.Client{Timeout: 30 * time.Second},
+		// No total client Timeout: a 256MiB blob over a slow WAN link can legitimately
+		// take minutes, and a wall-clock total would kill it mid-transfer. Bound the
+		// phases that SHOULD be fast instead (connect, TLS, time-to-first-byte) and let
+		// TCP keepalive reap a dead peer. ponytail: a mid-body stall isn't bounded here;
+		// add a stall-timeout reader if a flaky link ever hangs transfers.
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				DisableCompression:    true, // we negotiate gzip explicitly so the rate limiter sees wire bytes
+				MaxIdleConnsPerHost:   16,   // reuse connections for parallel blob transfers
+			},
+		},
 	}
+}
+
+// transient reports whether a failed attempt is worth retrying: a network error
+// (code 0) or a 5xx. A 4xx is a definite client/auth error — retrying just hammers.
+func transient(code int) bool { return code < 400 || code >= 500 }
+
+// retry runs attempt up to blobRetries times with exponential backoff, retrying
+// only transient failures. attempt returns the HTTP status (0 on a pre-response
+// error) and the error. Blob GET/PUT are idempotent (content-addressed), so this
+// is safe; it is NOT used for the non-idempotent control calls.
+func (c *Client) retry(attempt func() (int, error)) error {
+	delay := 200 * time.Millisecond
+	var err error
+	for i := 0; i < blobRetries; i++ {
+		var code int
+		if code, err = attempt(); err == nil {
+			return nil
+		}
+		if !transient(code) {
+			return err
+		}
+		if i < blobRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+		}
+	}
+	return err
 }
 
 // SetBearer sets the device bearer token used for authenticated requests.
@@ -139,32 +188,55 @@ func (c *Client) Events(ctx context.Context, share string, onEvent func(proto.Ev
 	return sc.Err()
 }
 
-// GetBlob downloads one blob's raw bytes by content hash (used by pull).
+// GetBlob downloads one blob's raw bytes by content hash (used by pull). When
+// compression is on it negotiates gzip explicitly (so the rate limiter counts
+// wire bytes) and decompresses bomb-safely. Transient failures are retried.
 func (c *Client) GetBlob(hash string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.base+proto.PathBlob+hash, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(c.limit(resp.Body))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, apiError(resp.StatusCode, body)
-	}
-	// Blobs (chunks and manifests) are content-addressed: the key is BLAKE3 of the
-	// bytes. Verify it so a corrupt/truncated transfer or a buggy/malicious hub
-	// can't write wrong content into the user's tree undetected.
-	if chunk.Hash(body) != hash {
-		return nil, fmt.Errorf("devbox: blob %s failed integrity check (got %s)", hash, chunk.Hash(body))
-	}
-	return body, nil
+	var out []byte
+	err := c.retry(func() (int, error) {
+		req, err := http.NewRequest(http.MethodGet, c.base+proto.PathBlob+hash, nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
+		if c.compress {
+			req.Header.Set("Accept-Encoding", "gzip")
+		}
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return 0, err // network: code 0 → retryable
+		}
+		defer resp.Body.Close()
+		reader := c.limit(resp.Body) // count compressed wire bytes against the cap
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(reader)
+			return resp.StatusCode, apiError(resp.StatusCode, b)
+		}
+		if resp.Header.Get("Content-Encoding") == "gzip" {
+			gz, gerr := gzip.NewReader(reader)
+			if gerr != nil {
+				return resp.StatusCode, gerr
+			}
+			defer gz.Close()
+			reader = io.LimitReader(gz, maxBlobBytes+1) // bomb guard
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return resp.StatusCode, err // truncated mid-body → retryable (code 200 is < 400)
+		}
+		if int64(len(body)) > maxBlobBytes {
+			return resp.StatusCode, fmt.Errorf("devbox: blob %s exceeds %d bytes decompressed", hash, maxBlobBytes)
+		}
+		// Blobs (chunks and manifests) are content-addressed: the key is BLAKE3 of the
+		// bytes. Verify it so a corrupt/truncated transfer or a buggy/malicious hub
+		// can't write wrong content into the user's tree undetected.
+		if chunk.Hash(body) != hash {
+			return resp.StatusCode, fmt.Errorf("devbox: blob %s failed integrity check (got %s)", hash, chunk.Hash(body))
+		}
+		out = body
+		return resp.StatusCode, nil
+	})
+	return out, err
 }
 
 // Push commits a snapshot. Its manifest and chunk blobs must already be uploaded.
@@ -268,29 +340,33 @@ func (c *Client) raw(method, path string, data []byte) error {
 			data, enc = gz, "gzip"
 		}
 	}
-	req, err := http.NewRequest(method, c.base+path, c.limit(bytes.NewReader(data)))
-	if err != nil {
-		return err
-	}
-	req.ContentLength = int64(len(data)) // body is a custom reader; set length explicitly
-	req.Header.Set("Content-Type", "application/octet-stream")
-	if enc != "" {
-		req.Header.Set("Content-Encoding", enc)
-	}
-	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return apiError(resp.StatusCode, body)
-	}
-	return nil
+	// Retry transient failures — a blob PUT is idempotent (content-addressed), and
+	// the body reader is rebuilt each attempt since c.limit consumes it.
+	return c.retry(func() (int, error) {
+		req, err := http.NewRequest(method, c.base+path, c.limit(bytes.NewReader(data)))
+		if err != nil {
+			return 0, err
+		}
+		req.ContentLength = int64(len(data)) // body is a custom reader; set length explicitly
+		req.Header.Set("Content-Type", "application/octet-stream")
+		if enc != "" {
+			req.Header.Set("Content-Encoding", enc)
+		}
+		req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return resp.StatusCode, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return resp.StatusCode, apiError(resp.StatusCode, body)
+		}
+		return resp.StatusCode, nil
+	})
 }
 
 // apiError turns a non-2xx body into an error, preferring proto.Error's message.

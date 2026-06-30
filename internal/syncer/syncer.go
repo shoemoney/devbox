@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/shoemoney/devbox/internal/chunk"
 	"github.com/shoemoney/devbox/internal/hooks"
@@ -90,10 +91,8 @@ func Push(c *transport.Client, root, share, subpath string, ig *ignore.Matcher, 
 	if err != nil {
 		return Result{}, err
 	}
-	for _, h := range missing {
-		if err := c.PutBlob(h, blobs[h]); err != nil {
-			return Result{}, err
-		}
+	if err := uploadBlobs(c, missing, blobs); err != nil {
+		return Result{}, err
 	}
 
 	// Declare every distinct chunk the full manifest references so the hub's
@@ -159,6 +158,44 @@ func splice(c *transport.Client, localM manifest.Manifest, subpath, parent strin
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return manifest.Manifest{Entries: entries}, nil
+}
+
+// uploadConcurrency bounds parallel blob uploads. WAN round-trip latency, not
+// bandwidth, dominates a push of many small chunks; a small pool keeps the pipe
+// full while the shared rate limiter still caps total throughput.
+const uploadConcurrency = 8
+
+// uploadBlobs PUTs every missing blob, up to uploadConcurrency in flight, and
+// returns the first error (cancelling further starts). Order doesn't matter —
+// blobs are content-addressed and independent.
+func uploadBlobs(c *transport.Client, missing []string, blobs map[string][]byte) error {
+	sem := make(chan struct{}, uploadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for _, h := range missing {
+		mu.Lock()
+		stop := firstErr != nil
+		mu.Unlock()
+		if stop {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(h string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := c.PutBlob(h, blobs[h]); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}(h)
+	}
+	wg.Wait()
+	return firstErr
 }
 
 // LoadIgnore compiles root/.devignore (an empty matcher if the file is absent).

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -392,6 +393,18 @@ func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	// Gzip the response when the client negotiated it (settings.transfer.compress on
+	// the device → WAN). The blob is already in memory, so this just streams it
+	// through a gzip.Writer. ponytail: no shrink-check — the client only asks when it
+	// expects a win; a tiny incompressible chunk may inflate a few bytes, which is
+	// noise next to the WAN round-trip it's trying to save.
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		gz.Write(b)
+		return
+	}
 	w.Write(b)
 }
 
