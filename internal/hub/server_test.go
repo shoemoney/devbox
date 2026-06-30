@@ -273,6 +273,52 @@ func TestPushWriteGate(t *testing.T) {
 	}
 }
 
+// TestMetricsCountersAndHealthVersion proves /healthz reports the build version
+// and /metrics exposes the new transfer counters, moved by a real blob PUT/GET.
+func TestMetricsCountersAndHealthVersion(t *testing.T) {
+	db, err := meta.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := blobstore.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewServer(db, store).SetVersion("v9.9.9").Handler())
+	defer srv.Close()
+	base := srv.URL
+
+	if st, body := do(t, "GET", base+"/healthz", "", nil); st != http.StatusOK || !strings.Contains(string(body), "v9.9.9") {
+		t.Fatalf("/healthz = %d %q, want 200 with version", st, body)
+	}
+
+	if err := db.CreateToken(HashToken("tok"), time.Now().Unix()+3600); err != nil {
+		t.Fatal(err)
+	}
+	bearer := joinWith(t, base, "tok").Bearer
+	blob := []byte("metricsblob") // 11 bytes
+	h := chunk.Hash(blob)
+	if st, _ := do(t, "PUT", base+proto.PathBlob+h, bearer, blob); st != http.StatusOK {
+		t.Fatalf("PUT blob = %d", st)
+	}
+	if st, got := do(t, "GET", base+proto.PathBlob+h, bearer, nil); st != http.StatusOK || !bytes.Equal(got, blob) {
+		t.Fatalf("GET blob = %d", st)
+	}
+
+	_, m := do(t, "GET", base+proto.PathMetrics, "", nil)
+	for _, want := range []string{
+		"devbox_blob_bytes_in_total 11",
+		"devbox_blob_bytes_out_total 11",
+		"devbox_pushes_total",
+		"devbox_conflicts_total",
+	} {
+		if !strings.Contains(string(m), want) {
+			t.Fatalf("/metrics missing %q\n---\n%s", want, m)
+		}
+	}
+}
+
 // TestBlobGzipUpload is the hub side of opt-in transport compression: a blob
 // PUT with Content-Encoding: gzip must be decompressed before hashing/storing
 // (so dedup + integrity are unchanged), round-trip back identical, and a gzip

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shoemoney/devbox/internal/chunk"
@@ -41,12 +42,23 @@ type Server struct {
 	broker    *broker
 	dash      *dashboard.Dashboard // optional live dashboard; nil = disabled (Emit is nil-safe)
 	publishMu sync.Mutex           // serializes publish so the case-clash check + create is atomic
+	version   string               // build version, surfaced at /healthz (set via SetVersion)
+
+	// Prometheus counters (monotonic). bytesIn/Out are the WAN signal now the hub
+	// is internet-reachable; pushes/conflicts show sync churn. Exposed at /metrics.
+	bytesIn   atomic.Int64
+	bytesOut  atomic.Int64
+	pushes    atomic.Int64
+	conflicts atomic.Int64
 }
 
 // NewServer builds a hub server over the given metadata store and blob store.
 func NewServer(db *meta.DB, store blobstore.Store) *Server {
 	return &Server{db: db, store: store, broker: newBroker()}
 }
+
+// SetVersion records the build version for the /healthz response.
+func (s *Server) SetVersion(v string) *Server { s.version = v; return s }
 
 // WithDashboard attaches a live dashboard so the hub emits flow events to it.
 func (s *Server) WithDashboard(d *dashboard.Dashboard) *Server { s.dash = d; return s }
@@ -91,6 +103,10 @@ func (s *Server) Handler() http.Handler {
 // restarts on unhealthy). /readyz is the deeper check.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if s.version != "" {
+		fmt.Fprintf(w, "ok %s\n", s.version) // lets a deploy verify the new build is live
+		return
+	}
 	fmt.Fprintln(w, "ok")
 }
 
@@ -392,6 +408,7 @@ func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string)
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.bytesOut.Add(int64(len(b)))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	// Gzip the response when the client negotiated it (settings.transfer.compress on
 	// the device → WAN). The blob is already in memory, so this just streams it
@@ -441,6 +458,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request, _ string) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.bytesIn.Add(int64(len(body)))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -478,6 +496,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		return
 	}
 	if req.ManifestHash != head && req.Parent != head {
+		s.conflicts.Add(1)
 		s.dash.Emit(dashboard.Event{Type: "conflict", Device: deviceID, Share: req.Share})
 		writeJSON(w, http.StatusOK, proto.PushResponse{Head: head, Conflict: true})
 		return
@@ -531,6 +550,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request, deviceID str
 		Type: "push", Device: deviceID, Share: req.Share,
 		Bytes: bytes, Chunks: len(chunks), Snapshot: shortID(snapshotID), NewHead: advanced,
 	})
+	s.pushes.Add(1)
 	writeJSON(w, http.StatusOK, proto.PushResponse{Snapshot: snapshotID, Head: snapshotID, Conflict: false})
 }
 
@@ -608,6 +628,21 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "# HELP %s %s\n", g.name, g.help)
 		fmt.Fprintf(w, "# TYPE %s gauge\n", g.name)
 		fmt.Fprintf(w, "%s %s\n", g.name, strconv.FormatInt(n, 10))
+	}
+
+	counters := []struct {
+		name, help string
+		val        int64
+	}{
+		{"devbox_blob_bytes_in_total", "Total bytes received in blob uploads (stored, post-decompress).", s.bytesIn.Load()},
+		{"devbox_blob_bytes_out_total", "Total bytes served in blob downloads (pre-compress).", s.bytesOut.Load()},
+		{"devbox_pushes_total", "Total push commits accepted.", s.pushes.Load()},
+		{"devbox_conflicts_total", "Total pushes rejected as stale-parent conflicts.", s.conflicts.Load()},
+	}
+	for _, c := range counters {
+		fmt.Fprintf(w, "# HELP %s %s\n", c.name, c.help)
+		fmt.Fprintf(w, "# TYPE %s counter\n", c.name)
+		fmt.Fprintf(w, "%s %s\n", c.name, strconv.FormatInt(c.val, 10))
 	}
 }
 

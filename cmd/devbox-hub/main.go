@@ -88,7 +88,7 @@ func serveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			srv := hub.NewServer(db, store)
+			srv := hub.NewServer(db, store).SetVersion(version)
 			out := cmd.OutOrStdout()
 
 			// Optional live dashboard on its own address (localhost by default so it
