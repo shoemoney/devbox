@@ -405,7 +405,7 @@ container automatically. 🪄
 | `devbox-hub share ls` `[--json]` | 📑 List shares (name/head/ACL mode/#snapshots/#members/updated) |
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
-| `devbox-hub backup <dir>` | 💾 Disaster-recovery snapshot: consistent DB copy (`VACUUM INTO`) + the blob tree into `<dir>` |
+| `devbox-hub backup <dir>` | 💾 Disaster-recovery snapshot: consistent DB copy (`VACUUM INTO`) + the blob tree into `<dir>` — flocked against gc so a sweep can't strand it mid-copy |
 | `devbox-hub fsck` `[--json]` | 🔬 Integrity scan: re-hash every blob (bit-rot) **and** flag dangling snapshots (manifest → missing blob); non-zero exit on either — pairs with `backup` for DR confidence |
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
