@@ -154,6 +154,9 @@ func publishCmd() *cobra.Command {
 
 			c := transport.New(d.Hub)
 			c.SetBearer(d.Bearer)
+			if s, err := config.LoadSettings(dir); err == nil {
+				c.SetCompress(s.Transfer.Compress) // big initial upload — honor compress over WAN
+			}
 			if err := c.Publish(share); err != nil {
 				return err
 			}

@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -396,11 +397,27 @@ func (s *Server) handleGetBlob(w http.ResponseWriter, r *http.Request, _ string)
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request, _ string) {
 	hash := r.PathValue("hash")
-	r.Body = http.MaxBytesReader(w, r.Body, maxBlobBytes)
-	body, err := io.ReadAll(r.Body)
+	// MaxBytesReader caps the COMPRESSED stream (wire DoS bound).
+	var src io.Reader = http.MaxBytesReader(w, r.Body, maxBlobBytes)
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(src)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad gzip body")
+			return
+		}
+		defer gz.Close()
+		// Also cap the DECOMPRESSED size (+1 to detect overflow) so a gzip bomb
+		// can't OOM the hub; a blob is ≤ maxBlobBytes uncompressed by definition.
+		src = io.LimitReader(gz, maxBlobBytes+1)
+	}
+	body, err := io.ReadAll(src)
 	if err != nil {
 		// MaxBytesReader trips here when the body exceeds maxBlobBytes.
 		writeErr(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	}
+	if len(body) > maxBlobBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, "decompressed blob too large")
 		return
 	}
 	if chunk.Hash(body) != hash {

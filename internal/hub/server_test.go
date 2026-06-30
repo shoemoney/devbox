@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -269,6 +270,56 @@ func TestPushWriteGate(t *testing.T) {
 	}
 	if st := push(); st == http.StatusForbidden {
 		t.Fatal("editor must pass the write gate")
+	}
+}
+
+// TestBlobGzipUpload is the hub side of opt-in transport compression: a blob
+// PUT with Content-Encoding: gzip must be decompressed before hashing/storing
+// (so dedup + integrity are unchanged), round-trip back identical, and a gzip
+// header over a non-gzip body must be rejected (bomb-safe ingest).
+func TestBlobGzipUpload(t *testing.T) {
+	base, db := testHub(t)
+	if err := db.CreateToken(HashToken("tok"), time.Now().Unix()+3600); err != nil {
+		t.Fatal(err)
+	}
+	bearer := joinWith(t, base, "tok").Bearer
+
+	original := bytes.Repeat([]byte("devbox compresses well over WAN! "), 2048)
+	hash := chunk.Hash(original)
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write(original); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+	if gz.Len() >= len(original) {
+		t.Fatalf("test data must compress: gz=%d orig=%d", gz.Len(), len(original))
+	}
+
+	put := func(h string, body []byte, enc string) int {
+		req, _ := http.NewRequest("PUT", base+proto.PathBlob+h, bytes.NewReader(body))
+		req.Header.Set(proto.AuthHeader, "Bearer "+bearer)
+		if enc != "" {
+			req.Header.Set("Content-Encoding", enc)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if st := put(hash, gz.Bytes(), "gzip"); st != http.StatusOK {
+		t.Fatalf("gzip PUT status = %d, want 200", st)
+	}
+	// Hub stored the DECOMPRESSED bytes — GET returns the original.
+	if st, got := do(t, "GET", base+proto.PathBlob+hash, bearer, nil); st != http.StatusOK || !bytes.Equal(got, original) {
+		t.Fatalf("round-trip: status=%d, %d bytes (want 200, %d)", st, len(got), len(original))
+	}
+	// A gzip header over a non-gzip body is rejected, not stored.
+	if st := put(chunk.Hash([]byte("x")), []byte("not gzip at all"), "gzip"); st != http.StatusBadRequest {
+		t.Fatalf("non-gzip body with gzip header: status = %d, want 400", st)
 	}
 }
 

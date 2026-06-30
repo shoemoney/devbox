@@ -9,6 +9,7 @@ package transport
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -27,10 +28,11 @@ import (
 
 // Client talks to one hub. The zero value is not usable; call New.
 type Client struct {
-	base    string // hub base URL, e.g. "http://host:8080"
-	bearer  string // device bearer token; empty until Join
-	hc      *http.Client
-	limiter *rate.Limiter // optional blob-transfer rate cap; nil = unlimited
+	base     string // hub base URL, e.g. "http://host:8080"
+	bearer   string // device bearer token; empty until Join
+	hc       *http.Client
+	limiter  *rate.Limiter // optional blob-transfer rate cap; nil = unlimited
+	compress bool          // gzip blob uploads when it shrinks them (settings.transfer.compress)
 }
 
 // New returns a Client for the hub at base (e.g. "http://host:8080").
@@ -43,6 +45,25 @@ func New(base string) *Client {
 
 // SetBearer sets the device bearer token used for authenticated requests.
 func (c *Client) SetBearer(b string) { c.bearer = b }
+
+// SetCompress enables gzip on blob uploads (used when settings.transfer.compress
+// is on — e.g. syncing over a WAN link). Off by default.
+func (c *Client) SetCompress(on bool) { c.compress = on }
+
+// gzipBytes returns the gzip-compressed form of data. Errors are impossible for
+// an in-memory writer; on the off chance, returns data so the caller's "shrank?"
+// check falls through to sending it uncompressed.
+func gzipBytes(data []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		return data
+	}
+	if err := zw.Close(); err != nil {
+		return data
+	}
+	return buf.Bytes()
+}
 
 // Bearer returns the current device bearer token.
 func (c *Client) Bearer() string { return c.bearer }
@@ -238,12 +259,24 @@ func (c *Client) do(method, path string, auth bool, body, out any) error {
 
 // raw sends raw bytes (used for blob uploads) with the bearer header set.
 func (c *Client) raw(method, path string, data []byte) error {
+	enc := ""
+	// gzip the body when compression is on AND it actually shrinks — incompressible
+	// chunks (already-compressed media, encrypted blobs) go raw so we never inflate
+	// the wire. The hub hashes the DECOMPRESSED body, so dedup/integrity are intact.
+	if c.compress {
+		if gz := gzipBytes(data); len(gz) < len(data) {
+			data, enc = gz, "gzip"
+		}
+	}
 	req, err := http.NewRequest(method, c.base+path, c.limit(bytes.NewReader(data)))
 	if err != nil {
 		return err
 	}
 	req.ContentLength = int64(len(data)) // body is a custom reader; set length explicitly
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if enc != "" {
+		req.Header.Set("Content-Encoding", enc)
+	}
 	req.Header.Set(proto.AuthHeader, "Bearer "+c.bearer)
 	resp, err := c.hc.Do(req)
 	if err != nil {

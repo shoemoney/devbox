@@ -131,6 +131,7 @@ func (d *Daemon) runMount(ctx context.Context, m config.Mount) {
 	}
 	c := transport.New(m.Hub)
 	c.SetBearer(d.cfg.Bearer)
+	c.SetCompress(d.compress)
 	if d.maxBytesPerSec > 0 {
 		c.SetRateLimit(d.maxBytesPerSec)
 	}

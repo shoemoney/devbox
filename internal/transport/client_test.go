@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -146,6 +147,59 @@ func TestPutBlob(t *testing.T) {
 	c.SetBearer("secret")
 	if err := c.PutBlob(hash, []byte("blobby")); err != nil {
 		t.Fatalf("PutBlob: %v", err)
+	}
+}
+
+// TestPutBlobCompress proves SetCompress gzips a compressible body (with the
+// Content-Encoding header, decompressing back to the original) but sends an
+// incompressible body raw — never inflating the wire.
+func TestPutBlobCompress(t *testing.T) {
+	var gotEnc string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEnc = r.Header.Get("Content-Encoding")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	c.SetBearer("secret")
+	c.SetCompress(true)
+
+	// Compressible payload → gzip, and it must decode back to the original.
+	original := bytes.Repeat([]byte("compress me over the WAN "), 1024)
+	if err := c.PutBlob("h1", original); err != nil {
+		t.Fatalf("PutBlob: %v", err)
+	}
+	if gotEnc != "gzip" {
+		t.Fatalf("compressible blob: Content-Encoding = %q, want gzip", gotEnc)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gotBody))
+	if err != nil {
+		t.Fatalf("server body not gzip: %v", err)
+	}
+	dec, _ := io.ReadAll(zr)
+	if !bytes.Equal(dec, original) {
+		t.Fatal("decompressed body != original")
+	}
+	if len(gotBody) >= len(original) {
+		t.Fatalf("gzip body (%d) not smaller than original (%d)", len(gotBody), len(original))
+	}
+
+	// Incompressible payload (random) → sent raw, no Content-Encoding.
+	rnd := make([]byte, 4096)
+	if _, err := rand.Read(rnd); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutBlob("h2", rnd); err != nil {
+		t.Fatalf("PutBlob random: %v", err)
+	}
+	if gotEnc != "" {
+		t.Fatalf("incompressible blob should send raw, got Content-Encoding %q", gotEnc)
+	}
+	if !bytes.Equal(gotBody, rnd) {
+		t.Fatal("raw body mismatch for incompressible payload")
 	}
 }
 
