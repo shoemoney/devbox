@@ -383,7 +383,7 @@ container automatically. 🪄
 | `devbox conflicts` `[--json] [--rm]` | 💥 List conflict copies across all mounts; `--json` emits a JSON array, `--rm` deletes them (review first!) |
 | `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
-| `devbox doctor` `[--json]` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer (non-zero exit on ❌ — cron-friendly); `--json` for monitoring |
+| `devbox doctor` `[--json]` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer + **clock skew vs hub** (warns >30s); non-zero exit on ❌ — cron-friendly; `--json` for monitoring |
 | `devbox status` shows sync age | ⏱️ Live status now prints per-mount last-sync age ("synced 12s ago" / "not synced yet") |
 | `devbox pause [--for <dur>]` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket; `--for 2h` auto-resumes (M8) |
 | `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
@@ -401,15 +401,18 @@ container automatically. 🪄
 |---|---|
 | `devbox-hub serve --config <file>` | 🚀 Start the hub |
 | `devbox-hub token` | 🎟️ Mint / rotate the join token |
-| `devbox-hub device list` / `revoke <id>` | 📋❌ List / revoke devices |
+| `devbox-hub device ls` `[--json]` · `revoke <id>` | 📋❌ List enrolled devices (id/name/principal/last-seen/revoked) / revoke one |
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
+| `devbox-hub backup <dir>` | 💾 Disaster-recovery snapshot: consistent DB copy (`VACUUM INTO`) + the blob tree into `<dir>` |
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
 | `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
+| `devbox-hub serve --metrics-token <tok>` | 🔐 Require a token for `/metrics` — close the unauthenticated leak on a WAN-exposed hub |
+| `devbox-hub serve --access-log` | 📝 Log one line per request (method, path, status, bytes, addr) for WAN forensics |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
-| `devbox-hub gc [--dry-run]` | 🧹 Garbage-collect unreferenced chunks; `--dry-run` previews what would be pruned, deletes nothing |
+| `devbox-hub gc [--dry-run] [--keep <n>] [--keep-days <n>]` | 🧹 GC unreferenced chunks; `--dry-run` previews, `--keep` keeps N newest/share, `--keep-days` also keeps anything from the last N days |
 | `GET /healthz` · `GET /readyz` | 🩺 Liveness (`/healthz` reports the build version) / readiness (`/readyz` pings the DB → 503 if unreachable) for Docker/LB |
-| `GET /metrics` | 📊 Prometheus: gauges (devices/shares/snapshots/chunks) + counters (blob bytes in/out, pushes, conflicts) |
+| `GET /metrics` | 📊 Prometheus: gauges (devices/shares/snapshots/chunks) + counters (blob bytes in/out, pushes, conflicts); gate with `--metrics-token` |
 
 </details>
 
