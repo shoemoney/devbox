@@ -372,18 +372,19 @@ container automatically. 🪄
 | `devbox join <hub> <token>` | 🎟️ Enroll this device against a hub |
 | `devbox mount <share> <dir>` | 🔗 Mount a share into a local dir (clone + sync) |
 | `devbox mount <share> <dir> --ro` | 🔒 Mount **read-only** (pull only, never push) |
+| `devbox mount … --exclude <pat>` | 🙈 Device-local ignore (gitignore syntax, repeatable) layered on the shared `.devignore` — e.g. skip a local build dir |
 | `devbox publish <dir> <name>` | 📂 Create a share from a local folder + push it |
 | `devbox unmount <share>` | ⏏️ Stop syncing a mount (files stay on disk) |
 | `devbox start` / `stop` | ▶️⏹️ Run / stop the daemon |
-| `devbox status` | 📊 Device, hub, mounts (with `ro`/`pinned`) |
-| `devbox log <share>` | 🕰️ Snapshot history (full ids) |
+| `devbox status` `[--json]` | 📊 Device, hub, mounts (with `ro`/`pinned`); `--json` for scripting (prefers live daemon state) |
+| `devbox log <share>` `[--json]` | 🕰️ Snapshot history (full ids); `--json` for machine-readable output |
 | `devbox restore <share> <snap> [path]` | ↩️ Roll back a file or a whole share |
 | `devbox deploy <share> <snap>` | 🚀 Pin a mount to a snapshot — applies it without pushing (blue/green) |
-| `devbox conflicts` | 💥 List conflict copies across all mounts |
+| `devbox conflicts` `[--json]` | 💥 List conflict copies across all mounts; `--json` emits a JSON array |
 | `devbox ignore <pattern>` | 🙈 Append a pattern to `./.devignore` |
 | `devbox hook edit <share> <event>` | 🪝 Scaffold/open a hook in `$EDITOR`; `hook list <share>` shows installed |
-| `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer |
-| `devbox pause` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket (M8) |
+| `devbox doctor` | 🩺 Diagnose watcher limits, perms, bash, hub connectivity + bearer (non-zero exit on ❌ — cron-friendly) |
+| `devbox pause [--for <dur>]` / `resume` | ⏸️▶️ Suspend/resume the running daemon's syncing via its control socket; `--for 2h` auto-resumes (M8) |
 | `devbox invite <share> <principal> <role>` | ✉️ Mint an invite token granting a role (`--reshare` for `+s`); attenuation-enforced (M8a) |
 | `devbox invite revoke <token>` | 🗑️ Kill a pending invite before it's redeemed (only a caller who could mint it) |
 | `devbox members <share>` | 👥 Show who can access a share, or "legacy share" (M8a) |
@@ -403,8 +404,10 @@ container automatically. 🪄
 | `devbox-hub readonly <device> <share>` | 🔒 Mark a device read-only on a share |
 | `devbox-hub member set/rm/list` · `principal` | 🛡️ Per-share roles + principals (M8a) |
 | `devbox-hub serve --dashboard` | 📊 Serve the live web dashboard (loopback `:8099` by default) |
+| `devbox-hub serve --dashboard-token <tok>` | 🔐 Require a token to view the dashboard (recommended for any non-loopback bind) |
 | `devbox-hub serve --gc-every <dur>` | 🧹 Opt-in in-process periodic GC (off by default; each sweep animates on the dashboard) |
-| `devbox-hub gc` | 🧹 Garbage-collect unreferenced chunks |
+| `devbox-hub gc [--dry-run]` | 🧹 Garbage-collect unreferenced chunks; `--dry-run` previews what would be pruned, deletes nothing |
+| `GET /healthz` · `GET /readyz` | 🩺 Liveness / readiness probes (readyz pings the DB → 503 if unreachable) for Docker/LB |
 
 </details>
 
@@ -517,6 +520,26 @@ files are **left on disk** (never deleted), they just stop syncing.
 Default-blocked: `.env` · `.env.*` (except `.env.example`) · `*.pem` · `*.key` · `id_rsa*` ·
 `*.p12` · `*.pfx` · `secrets/` · `*.kdbx` · common cloud-cred files. Blocked files show up in
 `devbox status`. Add your own via `[secrets].extra_patterns` in `config.toml`.
+
+<details>
+<summary>⚙️ <b><code>config.toml</code> — per-machine tunables</b></summary>
+
+```toml
+[transfer]
+max_kbps  = 0     # blob transfer cap (KB/s); 0 = unlimited
+compress  = false # 🌐 gzip blob uploads — turn on for devices syncing over a WAN link
+
+[sync]
+rescan_seconds = 60 # watcher-fallback rescan cadence; raise on a huge tree, lower for snappier convergence
+
+[secrets]
+extra_patterns = ["*.secret", "vault-*"] # additional secret-guard deny patterns
+```
+
+> `compress` only gzips a chunk when it actually shrinks (incompressible blobs go raw), and the
+> hub hashes the **decompressed** bytes so dedup + integrity are untouched. 🗜️
+
+</details>
 
 ---
 
