@@ -644,3 +644,49 @@ func TestDeviceLsShowsDevice(t *testing.T) {
 		t.Fatal("fresh device should not be revoked")
 	}
 }
+
+func TestAllSnapshots(t *testing.T) {
+	db := open(t)
+	now := time.Now().Unix()
+	if err := db.AddDevice("d1", "dev", []byte("pub"), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateShare("s1", "d1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateShare("s2", "d1", now); err != nil {
+		t.Fatal(err)
+	}
+
+	// empty: no snapshots yet
+	refs, err := db.AllSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("expected 0 snapshots, got %d", len(refs))
+	}
+
+	// add one snapshot per share
+	if err := db.AddSnapshot(Snapshot{ID: "snap1", Share: "s1", DeviceID: "d1", ManifestHash: "snap1", CreatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddSnapshot(Snapshot{ID: "snap2", Share: "s2", DeviceID: "d1", ManifestHash: "snap2", CreatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	refs, err = db.AllSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(refs))
+	}
+	got := map[string]string{}
+	for _, r := range refs {
+		got[r.ID] = r.Share
+	}
+	if got["snap1"] != "s1" || got["snap2"] != "s2" {
+		t.Fatalf("unexpected refs: %+v", got)
+	}
+}

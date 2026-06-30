@@ -703,14 +703,58 @@ func backupCmd() *cobra.Command {
 	return cmd
 }
 
-// fsckCmd re-hashes every blob on disk to detect at-rest corruption.
+// danglingEntry is a snapshot that references at least one missing blob.
+type danglingEntry struct {
+	Share   string   `json:"share"`
+	ID      string   `json:"id"`
+	Missing []string `json:"missing"`
+}
+
+// checkDangling enumerates every snapshot in db and returns those that reference
+// a blob that does not exist in store (missing manifest or missing chunk).
+func checkDangling(db *meta.DB, store blobstore.Store) ([]danglingEntry, error) {
+	snaps, err := db.AllSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	var out []danglingEntry
+	for _, snap := range snaps {
+		var missing []string
+		if ok, _ := store.Has(snap.ID); !ok {
+			missing = append(missing, snap.ID) // manifest blob itself is gone
+		} else {
+			chunks, err := manifestChunks(store, snap.ID)
+			if err != nil {
+				if errors.Is(err, blobstore.ErrNotFound) {
+					missing = append(missing, snap.ID)
+				} else {
+					return nil, err
+				}
+			} else {
+				for _, h := range chunks {
+					if ok, _ := store.Has(h); !ok {
+						missing = append(missing, h)
+					}
+				}
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, danglingEntry{snap.Share, snap.ID, missing})
+		}
+	}
+	return out, nil
+}
+
+// fsckCmd re-hashes every blob on disk to detect at-rest corruption, then
+// checks every snapshot for dangling references (manifest or chunk blobs that
+// no longer exist in the store).
 // ponytail: re-hashes every blob (full read); fine for periodic DR checks, sample/mtime-skip if it ever gets too slow on a huge store.
 func fsckCmd() *cobra.Command {
 	var data string
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "fsck",
-		Short: "🔍 at-rest blob integrity scan (re-hash every blob)",
+		Short: "🔍 at-rest blob integrity scan (re-hash every blob + dangling snapshot check)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := blobstore.NewDisk(filepath.Join(data, "blobs"))
 			if err != nil {
@@ -744,23 +788,54 @@ func fsckCmd() *cobra.Command {
 			if walkErr != nil {
 				return walkErr
 			}
+
+			db, err := openDB(data)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			dangling, err := checkDangling(db, store)
+			if err != nil {
+				return err
+			}
+			if !asJSON {
+				for _, d := range dangling {
+					shortID := d.ID
+					if len(shortID) > 12 {
+						shortID = shortID[:12]
+					}
+					extra := len(d.Missing) - 1
+					if extra > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(), "⚠️  DANGLING snapshot %s/%s: missing %s (+%d more)\n", d.Share, shortID, d.Missing[0], extra)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "⚠️  DANGLING snapshot %s/%s: missing %s\n", d.Share, shortID, d.Missing[0])
+					}
+				}
+			}
+
 			if asJSON {
 				type result struct {
-					Scanned int            `json:"scanned"`
-					Corrupt []corruptEntry `json:"corrupt"`
+					Scanned  int            `json:"scanned"`
+					Corrupt  []corruptEntry `json:"corrupt"`
+					Dangling []danglingEntry `json:"dangling"`
 				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				if err := enc.Encode(result{scanned, corrupt}); err != nil {
+				if err := enc.Encode(result{scanned, corrupt, dangling}); err != nil {
 					return err
 				}
-			} else if len(corrupt) == 0 {
+			} else if len(corrupt) == 0 && len(dangling) == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "✅ fsck: %d blobs OK\n", scanned)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "❌ fsck: %d/%d blobs CORRUPT\n", len(corrupt), scanned)
+				if len(corrupt) > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "❌ fsck: %d/%d blobs CORRUPT\n", len(corrupt), scanned)
+				}
+				if len(dangling) > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "❌ fsck: %d dangling snapshot(s)\n", len(dangling))
+				}
 			}
-			if len(corrupt) > 0 {
-				return fmt.Errorf("fsck: %d corrupt blob(s) found", len(corrupt))
+			if len(corrupt) > 0 || len(dangling) > 0 {
+				return fmt.Errorf("fsck: %d corrupt blob(s), %d dangling snapshot(s)", len(corrupt), len(dangling))
 			}
 			return nil
 		},

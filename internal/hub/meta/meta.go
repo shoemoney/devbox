@@ -839,6 +839,28 @@ func (d *DB) UnreferencedChunks() ([]string, error) {
 	return out, rows.Err()
 }
 
+// SnapshotRef is a (share, id) pair for cross-share snapshot enumeration.
+type SnapshotRef struct{ Share, ID string }
+
+// AllSnapshots returns every snapshot row as a {Share, ID} pair.
+// Used by fsck to enumerate all snapshots across all shares.
+func (d *DB) AllSnapshots() ([]SnapshotRef, error) {
+	rows, err := d.sql.Query(`SELECT share, id FROM snapshots`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SnapshotRef
+	for rows.Next() {
+		var r SnapshotRef
+		if err := rows.Scan(&r.Share, &r.ID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DeleteChunkRow removes a chunk's metadata row, but ONLY if it is still
 // unreferenced at delete time (refcount<=0) — so a push that re-referenced the
 // chunk between GC's scan and this delete isn't silently corrupted. Returns
