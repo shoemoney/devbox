@@ -32,3 +32,18 @@ func TestLoadDaemonMissingIsEmpty(t *testing.T) {
 		t.Fatalf("expected empty daemon for missing file, got %+v", d)
 	}
 }
+
+func TestStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	in := map[string]string{"share\x00\x00/local": "snap123"}
+	if err := SaveState(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["share\x00\x00/local"] != "snap123" {
+		t.Fatalf("round-trip mismatch: %v", got)
+	}
+}

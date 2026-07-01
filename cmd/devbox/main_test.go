@@ -14,6 +14,31 @@ import (
 	"github.com/shoemoney/devbox/internal/identity"
 )
 
+// TestLoadGuard proves loadGuard picks up extra_patterns from config.toml so CLI
+// upload paths honour the user's secret list (Bug 1 regression check).
+func TestLoadGuard(t *testing.T) {
+	cfgBase := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgBase)
+	dir := filepath.Join(cfgBase, "devbox")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"),
+		[]byte("[secrets]\nextra_patterns=[\"*.secret\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGuard(dir)
+	if err != nil {
+		t.Fatalf("loadGuard: %v", err)
+	}
+	if !g.Blocked("foo.secret") {
+		t.Error("foo.secret must be blocked by extra_patterns")
+	}
+	if g.Blocked("main.go") {
+		t.Error("main.go must NOT be blocked")
+	}
+}
+
 // TestStatusJSON proves `status --json` emits valid JSON and reports not-joined
 // on a fresh config dir (the scriptable path for fleet monitoring).
 func TestStatusJSON(t *testing.T) {

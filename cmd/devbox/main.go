@@ -169,7 +169,7 @@ func publishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			guard, err := secret.New(nil)
+			guard, err := loadGuard(dir)
 			if err != nil {
 				return err
 			}
@@ -235,7 +235,7 @@ func mountCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			guard, err := secret.New(nil)
+			guard, err := loadGuard(dir)
 			if err != nil {
 				return err
 			}
@@ -276,6 +276,13 @@ func mountCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&ro, "ro", false, "mount read-only (pull only, never push)")
 	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "device-local ignore pattern (gitignore syntax; repeatable) layered on .devignore")
 	return cmd
+}
+
+// loadGuard builds the secret guard with the user's extra_patterns from config.toml,
+// so CLI upload paths block the same secrets the daemon does. Missing settings → defaults only.
+func loadGuard(dir string) (*secret.Guard, error) {
+	s, _ := config.LoadSettings(dir) // absent/parse-error → zero Settings → default patterns
+	return secret.New(s.Secrets.ExtraPatterns)
 }
 
 // splitShare splits "share/sub/path" into ("share", "sub/path"); a bare "share"
@@ -475,7 +482,7 @@ func restoreCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			guard, err := secret.New(nil)
+			guard, err := loadGuard(dir)
 			if err != nil {
 				return err
 			}
@@ -683,7 +690,7 @@ func deployCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			guard, err := secret.New(nil)
+			guard, err := loadGuard(dir)
 			if err != nil {
 				return err
 			}
